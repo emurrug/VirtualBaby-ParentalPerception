@@ -1,0 +1,38 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1045 &1
+EditorBuildSettings:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Scenes:
+  - enabled: 1
+    path: Assets/Scenes/0.PleaseWait.unity
+    guid: 3cfdb269f21411848866e1a48062f741
+  - enabled: 1
+    path: Assets/Scenes/1.InformedConsentParent.unity
+    guid: a8062da9143babe4495968eeb9b280e1
+  - enabled: 1
+    path: Assets/Scenes/2.Registration.unity
+    guid: 2928b5fa884777944a39ae1c4578ff86
+  - enabled: 1
+    path: Assets/Scenes/3.Narrative1.unity
+    guid: b3af3e2970919d644bf4498735253b23
+  - enabled: 1
+    path: Assets/Scenes/4.NeutralScene.unity
+    guid: f5066c0ae3de2a4458c22f0eb4ab5f7c
+  - enabled: 1
+    path: Assets/Scenes/5.Narrative2.unity
+    guid: dec97f49ce9f4b949a7f9f1878ad334b
+  - enabled: 1
+    path: Assets/Scenes/6.BabyScene.unity
+    guid: a4b33d76dc0918b41b0bfffb8a3c10c1
+  - enabled: 1
+    path: Assets/Scenes/7.EndGame.unity
+    guid: f44fdc999d200564fba35c225f4631fe
+  - enabled: 1
+    path: Assets/Scenes/8.InformedConsentNonparent.unity
+    guid: e17699dfb01281b4a9f0bdf5d388bff2
+  - enabled: 1
+    path: Assets/Scenes/9.Narrative3.unity
+    guid: 23c340479c013e0469ea6d17cf4d0863
+  m_configObjects: {}
