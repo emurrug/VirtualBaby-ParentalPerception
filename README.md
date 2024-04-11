@@ -9,12 +9,12 @@ The goal of participants is twofold:
 1. Make sure their virtual infant doesn't get hit by oncoming traffic
 2. Wave down cars so that someone may stop and help them
 
-These goals are intentionally at odds with one another to also see how parents are dividing their attention. 
-The main *dependent variables* in this experiment are reaction time to detect oncoming traffic and estimated speed judgements of passing cars.
+These goals are intentionally at odds with one another. 
+The main *dependent variables* in this paradigm are reaction time to detect oncoming traffic and estimated speed judgements of passing cars.
 *Independent variables* and additional dependent variables will vary by project version.
 
 The P.I. on this project is Emma Murrugarra (eam422@cornell.edu) working with Michael Goldstein (mhg26@cornell.edu) in the B.A.B.Y. Lab at Cornell University. 
-More detailed descriptions and motivations for this project are written about in Murrugarra & Goldstein (2024, submitted) and Murrugarra & Goldstein (2023, submitted).
+More detailed descriptions and motivations for this project are written about in the publications listed below.
 
 
 ****************
