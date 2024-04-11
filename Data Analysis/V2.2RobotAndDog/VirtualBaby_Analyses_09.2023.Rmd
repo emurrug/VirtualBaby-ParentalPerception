@@ -1,0 +1,772 @@
+---
+title: "Analyzing Validity Check (i.e., Robot Dog Vers.)"
+date: "September 2023"
+output: word_document
+---
+
+## Brief Description of Document
+*This document is a stable markdown file that allows me to reproduce analyses and figures in report form. The most up to date raw data is currently being stored on GitHub at BabyLab/VirtualBaby-ParentPerception.*
+
+*Note: By distributing the raw .Rmd file, one can use* `include=TRUE` *to include output, or* `echo=TRUE` *to include code. i.e., this report can be catered to different audiences without changing any of the contents. To generate a word output of the results, you can "knit" this file immediately.*
+
+**Virtual Baby (and Robot and Dog)** is a validity check to make sure that the Virtual Baby has more significance in impacting motivated perception.
+
+## Setting up
+*Hidden code*: To import necessary R packages and files. Files are pulled from local clone of GitHub repository.
+```{r library, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+#library
+library(knitr)
+library(tibble)
+library(dplyr) #please do not load plyr! it contradicts files in dplyr
+library(tidyr)
+library(scales)
+library(ggplot2)
+library(emmeans)
+library(lme4)
+library(ggridges)
+library(lmerTest)
+library(rmarkdown)
+library(forcats)
+library(effectsize)
+library(datawizard)
+```
+
+```{r df, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+#With Cornell Enterprise, I can't store access the private data files directly anymore. So I gather the files from my local instantiation of the repo instead.
+
+df <- read.csv("C:/Users/emmam/Documents/GitHub/VirtualBaby-ParentPerception/Data Analysis/V2.2RobotAndDog/combined_unity.csv")
+demos <- read.csv("C:/Users/emmam/Documents/GitHub/VirtualBaby-ParentPerception/Data Analysis/V2.2RobotAndDog/demos.csv")
+```
+
+## Cleaning The Data (Pre-Processing)
+*Description:* These were the steps taken to get the data in the right format for analysis. 
+
+* The `demos` file was pre-cleaned by removing pilots, removing extra qualtrics headers, and adding ID and Condition (according to experimenter log)
+
+*Hidden Code*: For the following process
+
+* remove sloppy data (i.e., due to game glitches, parents stopping the study, or in-person infant fussiness)
+* Creating sum variables for PROMIS scores (depression & anxiety)
+* Reducing demos to vars of interest (age, gender, race, primary_language, anxiety, depression, videogames, relationship, number_children, baby_mobility, breastfeed)
+* Creating a merged dataset that combines demographic info and gameplay info
+
+
+```{r demos_prep, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+demos <- demos %>% mutate('anxiety' = PROMIS_1 + PROMIS_2 + PROMIS_3 + PROMIS_4 + PROMIS_5 + PROMIS_6 + PROMIS_7 + PROMIS_8) %>%  mutate('depression' = PROMIS_9 + PROMIS_10 + PROMIS_11
++ PROMIS_12 + PROMIS_13 + PROMIS_14 + PROMIS_15 + PROMIS_16)
+
+#(easy to add more as needed, just be sure to change the loop below too)
+demos <- demos %>% select(id, subcondition, age, gender, race, primary_language, anxiety, depression, videogames, relationship, number_children, baby_mobility, breastfeed)
+df <- df %>% 
+  add_column(age = NA, gender = NA, race = NA, primary_language = NA, anxiety = NA, 
+             depression = NA, videogames = NA, relationship = NA, number_children = NA, baby_mobility = NA, breastfeed = NA, )
+```
+
+```{r relabelingdemos, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+#relabeling factors to make codes prettier
+demos$subcondition <- recode(demos$subcondition, n="Non-Parent", p="Parent")
+df$subcondition <- recode(df$subcondition, n="Non-Parent", N="Non-Parent", p="Parent", P="Parent")
+demos$gender <- as.factor(demos$gender)
+demos$gender <- recode(demos$gender, "1"="Male", "2"="Female")
+demos$race <- recode(demos$race, "1"="Black", "2"="White", "3"="S. Asian", "4" = "Am. Native", "5"= "Pacific Islander", 
+                     "6"="Other", "7"="E. Asian", "8"="M.Eastern", "9"="Hispanic/Latino", "2,7"="White/Other", "2,9"="White/Other", "1,9" = "Black/Hispanic", "1.2" = "Black/White")
+demos$white <-recode(demos$race, "White" = "1", .default = "0")
+demos$videogames <-recode(demos$videogames, "1" = "Experienced", "2" = "Inexperienced")
+demos$relationship <- recode(demos$relationship, "1"="Married", "2"="Widowed", "3"="Separated", "4" = "Never Married", "5"= "In a Relationship", "6"="Cohabiting", "7"="Single", "4,7" = "Single", "1,3,6" = "Cohabiting", "4,5" = "In a Relationship", "5,6" = "Cohabiting", "1,5" = "Married", "1,6" = "Married", "1,3" = "Married")
+demos$baby_mobility<-recode(demos$baby_mobility, "1"="Pre-Crawl", "1,2" = "Pre-Crawl", "1,4" = "Pre-Crawl", "1,2,3" = "Crawl", "2,3" = "Crawl", "1,2,3,4" = "Crawl", "1,2,3,4,5" = "Walk", "5" = "Walk", "6" = "Pre-Crawl", "1,3" = "Crawl", "2" = "Pre-Crawl", "2,3,5" = "Walk", "2,3,4" = "Crawl", "3,4" = "Crawl", "3" = "Crawl", "1,3,4" = "Crawl") %>% na_if("") %>% replace_na("Non-Parent")
+demos$breastfeed <- recode(demos$breastfeed, "1" = "Yes, in the past", "2"="Yes, currently", "3"="No, Never")
+```
+
+```{r merge, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+#need to make sure that the column that the two are merging on are of the same type
+df$id <- as.factor(df$id)
+demos$id <- as.factor(demos$id)
+
+#the loop that  the two files using "id" as the anchor
+#warning: this can take a few minutes since the df file is getting big
+for(i in 1:dim(df[1])){
+  for(j in 1:dim(demos[1])){
+    if(df$id[i] == demos$id[j]){
+      df$age[i] = demos$age[j] 
+      df$gender[i] = demos$gender[j] 
+      df$race[i] = demos$race[j] 
+      df$primary_language[i] = demos$primary_language[j] 
+      df$anxiety[i] = demos$anxiety[j] 
+      df$depression[i] = demos$depression[j]
+      df$videogames[i] = demos$videogames[j]
+      df$relationship[i] = demos$relationship[j]
+      df$number_children[i] = demos$number_children[j]
+      df$baby_mobility[i] = demos$baby_mobility[j]
+      df$breastfeed[i] = demos$breastfeed[j]
+    }
+  }
+}
+
+#later i will need this code. for some reason I was unable to relable "NA"s in 
+#the later datafiles "JustRTs" and "JustSpeeds"
+#df$mobility[is.na(df$mobility)] <- "nobaby"
+```
+
+
+
+## Demographic Descriptives
+*Description*: A series of tables that break down the demographic information of the different subjects. There is still data to be analyzed, but requires additional data pre-processing.
+
+
+```{r counts, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+demos %>% group_by(subcondition) %>% 
+  summarise(Count=n()) %>% 
+  kable(., digits = 2, caption = "Total Subject Count per Condition")
+
+```
+
+```{r demos, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+demos$age <- as.numeric(demos$age)
+demos %>%
+  group_by(subcondition) %>% 
+  summarise(Mean=mean(age), Min=min(age), Max=max(age), Median=median(age), SD=sd(age)) %>% 
+  kable(., digits = 2, caption = "Age Descriptives")
+
+
+demos %>%
+  group_by(subcondition, gender) %>% 
+  summarise(Count=n()) %>% 
+  mutate(Proportion = prop.table(Count)*100) %>% 
+  kable(., digits = 2, caption = "Gender Descriptives")
+
+demos %>%
+  group_by(subcondition, white) %>% 
+  summarise(Count=n()) %>% 
+  mutate(Proportion = prop.table(Count)*100) %>% 
+  kable(., digits = 2, caption = "Race Descriptives (Identifying as White Only)")
+
+demos %>%
+  filter(!is.na(anxiety)) %>% 
+  group_by(subcondition) %>% 
+  summarise(Mean=mean(anxiety), Min=min(anxiety), Max=max(anxiety), Median=median(anxiety), SD=sd(anxiety)) %>% 
+  kable(., digits = 2, caption = "Anxiety Scores (higher = more symptoms)")
+demos %>%
+  filter(!is.na(depression)) %>% 
+  group_by(subcondition) %>%
+  summarise(Mean=mean(depression), Min=min(depression), Max=max(depression), Median=median(depression), SD=sd(depression)) %>% 
+  kable(., digits = 2, caption = "Depression Scores (higher = more symptoms)")
+
+demos %>%
+  group_by(subcondition, videogames) %>% 
+  summarise(Count=n()) %>% 
+  mutate(Proportion = prop.table(Count)*100) %>% 
+  kable(., digits = 2, caption = "Videogame Descriptives")
+
+demos %>%
+  group_by(subcondition, relationship) %>% 
+  summarise(Count=n()) %>% 
+  mutate(Proportion = prop.table(Count)*100) %>% 
+  kable(., digits = 2, caption = "Relationship Descriptives")
+
+
+```
+
+
+### Parent-Only Demographics
+```{r babydemos, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+demos %>% 
+  filter(subcondition == "Parent") %>% 
+  group_by(number_children) %>% 
+  summarise(Count=n()) %>%  
+  kable(., digits = 2, caption = "Number of Children")
+
+demos %>% 
+  filter(subcondition == "Parent") %>% 
+  group_by(breastfeed) %>% 
+  summarise(Count=n()) %>%  
+  kable(., digits = 2, caption = "Does Baby Breastfeed?")
+```
+```{r subdifferences, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+demos$age <- as.numeric(demos$age)
+lm_subXage <- lm(age ~ subcondition, data = demos)
+summary(lm_subXage)
+
+chisq.test(demos$gender, demos$subcondition)
+
+chisq.test(demos$race, demos$subcondition)
+
+chisq.test(demos$relationship, demos$subcondition)
+chisq.test(demos$videogames, demos$subcondition)
+
+lm_subXanxiety <- lm(anxiety ~ subcondition , data = demos)
+summary(lm_subXanxiety)
+
+lm_subXdepression <- lm(depression ~ subcondition, data = demos)
+summary(lm_subXdepression)
+```
+
+## Main DV's
+
+### Reaction Time (Threat *Detection*)
+**Description**: This DV reflects time from car onset to first SPACE PRESSED (i.e., RT to car detection). 
+
+
+```{r isolatingtruetrials, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE}
+#making a unique code to identify rows easier
+df <-df %>% mutate ("uniquecode" = paste(subcondition, id, trial, carspeed, blockname))
+df <-df %>% mutate ("xtra_uniquecode" = paste(subcondition, id, trial, carspeed, blockname, timenow))
+
+#isolating a variable I can use for later (Bpresses) before changing what df is (i.e., autosave)
+df_pretrues <- df
+
+#isolating the three critical events of each trial so that we have ONLY 3 per trial
+#the 3 critical events are selected by removing other instances in the same trial in later rows
+df_scores <- df %>% filter(eventname == "Score (Space Pressed)")
+df_carstart <- df %>% filter(eventname == "Car Starts")
+df_carend <- df %>% filter(eventname == "Car Ends")
+
+#df of just the first unique instance of each event
+df_uniquescores <- df_scores %>% distinct(eventname, uniquecode, .keep_all = TRUE)
+df_uniquestarts <- df_carstart %>% distinct(eventname, uniquecode, .keep_all = TRUE)
+df_uniqueends <- df_carend %>% distinct(eventname, uniquecode, .keep_all = TRUE)
+
+
+#df of just events that are to be filtered out for being anything but the first instance
+df_scoredupes <- df_scores[!df_scores$xtra_uniquecode %in% df_uniquescores$xtra_uniquecode,]
+df_startdupes <- df_carstart[!df_carstart$xtra_uniquecode %in% df_uniquestarts$xtra_uniquecode,]
+df_enddupes <- df_carend[!df_carend$xtra_uniquecode%in% df_uniqueends$xtra_uniquecode,]
+
+#removing the filtered df from the main df
+df <- df[!df$xtra_uniquecode %in% df_scoredupes$xtra_uniquecode,]
+df <- df[!df$xtra_uniquecode %in% df_startdupes$xtra_uniquecode,]
+df <- df[!df$xtra_uniquecode %in% df_enddupes$xtra_uniquecode,]
+```
+
+```{r RTs, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE}
+df$timenow <- as.numeric(df$timenow)
+
+JustRTs <- df %>% 
+  filter(eventname == "Score (Space Pressed)" | eventname == "Car Starts") %>% 
+  mutate(timesincecarstart = timenow - lag(timenow, default = first(timenow))) %>% 
+  filter(eventname == "Score (Space Pressed)" & timesincecarstart < 10) #filters out RT outliers due to trial gaps
+```
+
+#### Spams and Whiffs
+Averages for trials where participants spammed space or missed the car entirely.
+
+```{r missedtrials, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+#trials where the subject pressed space more than once
+  df_scoredupes %>% 
+  group_by(id, baby_mobility, blockname) %>% 
+  summarise(SpacePresses = n()) %>% 
+  filter(SpacePresses < 36) %>% 
+  group_by(baby_mobility, blockname) %>%
+  summarise(AverageExtraSpacePresses = mean(SpacePresses)) %>% 
+  kable(., digits = 2, caption = "Average number of additional space presses")
+scoredupes <- 
+  df_scoredupes %>% 
+  group_by(id, baby_mobility, blockname) %>% 
+  summarise(SpacePresses = n()) %>% 
+  filter(SpacePresses < 36) %>% 
+  group_by(baby_mobility, blockname)
+
+ggplot(scoredupes, aes(x=blockname, y=SpacePresses, fill = baby_mobility)) + geom_boxplot()
+
+#trials where the subject failed to press space
+df_scores %>% 
+  filter(responsename == 15 | responsename == 25 | responsename == 35) %>%
+  select(id, baby_mobility, blockname, trial, responsename) %>% 
+  mutate(misses = as.numeric(trial) - 10) %>% 
+  filter(misses > 0) %>% 
+  group_by(baby_mobility, blockname) %>% 
+  summarise(AverageTrialsMissed = mean(misses)) %>% 
+  kable(., digits = 2, caption = "Average number of trials subject failed to wave the car")
+scores<-df_scores %>% 
+  select(id, baby_mobility, blockname, trial, responsename) %>% 
+  mutate(misses = as.numeric(trial) - 10) %>% 
+  filter(misses > 0) %>% 
+  group_by(baby_mobility, blockname)
+ggplot(scores, aes(x=blockname, y=misses, fill = baby_mobility)) + geom_boxplot()
+```
+
+
+#### RT predicted by virtual baby presence/type
+**Description**: Regression model where RT is predicted by model stimuli and random effects ID.
+
+```{r RTsgraph1, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+JustRTs$blockname <- as.factor(JustRTs$blockname)
+JustRTs$baby_mobility <- as.factor(JustRTs$baby_mobility)
+
+RT.se.summary <- JustRTs %>% 
+  group_by(blockname, subcondition) %>% #within block and subject and parental status
+  summarise(
+    sd = sd(timesincecarstart),
+    se = sqrt(var(timesincecarstart)/length(timesincecarstart)),
+    mean = mean(timesincecarstart),
+    alpha=0.05, 
+    t=qt((1-alpha)/2 + .5, 
+    length(JustRTs$timesincecarstart)-1),   # tend to 1.96 if sample size is big enough
+    CI=t*se)
+
+
+#relabeling factors to make codes prettier
+RT.se.summary$blockname <- recode(RT.se.summary$blockname, 
+                                  "6.BabyScene" = "Infant", 
+                                  "6.DogScene" = "Dog", 
+                                  "6.RobotScene" = "Robot")
+
+plot <- ggplot(RT.se.summary, aes(x=blockname, y = mean, ymin = mean-CI, ymax = mean+CI, group = subcondition, color = subcondition, fill = subcondition)) +
+  # geom_line(size = 1.5) +
+  # geom_point(size = 3) +
+  # geom_errorbar(size = 1, width = 0.2) +
+    geom_bar(stat = "identity", position = position_dodge()) + 
+  geom_errorbar(size = 1, width = 0.2, position = position_dodge(0.9), color = "black") +
+  xlab("Virtual Model Condition") + ylab("Average Reaction Time (s)") + 
+ scale_color_manual(name = "Parental Experience", values = c("blue", "darkgoldenrod3")) +
+  scale_fill_manual(name = "Parental Experience", values = c("blue", "darkgoldenrod3")) +
+  theme_classic() +
+  theme(axis.text=element_text(size=18), 
+        axis.title=element_text(size=20,face="bold"), 
+        legend.text=element_text(size=18),
+        legend.title = element_text(size=20))
+plot
+``` 
+
+```{r RTtest1, include=TRUE, echo = TRUE, message=FALSE, warning=FALSE}
+lm_RTnull <- lmer(timesincecarstart ~  (1|id), data = JustRTs)
+lm_RT1 <- lmer(timesincecarstart ~  blockname + (1|id), data = JustRTs)
+lm_RT2 <- lmer(timesincecarstart ~  subcondition + (1|id), data = JustRTs)
+lm_RT3 <- lmer(timesincecarstart ~  blockname * subcondition + (1|id), data = JustRTs)
+lm_RT4 <- lmer(timesincecarstart ~  blockname + subcondition + (1|id), data = JustRTs)
+```
+
+```{r RTtestemmeans1, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+emmeans(lm_RT1, "blockname", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Average effect of Virtual Infant Type")
+emmeans(lm_RT2, "subcondition", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Average effect of Virtual Infant Type")
+
+emmeans(lm_RT3, "blockname", by="subcondition", contr="pairwise", infer=TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Difference in mobility estimates by parental status")
+
+ref_speed <- ref_grid(lm_RT3,at=list(responsename=c(0,1)))
+contrast(ref_speed, interaction = "pairwise") %>% 
+  kable(., digit=3, caption = "Interaction between mobility and parental status")
+
+anova(lm_RTnull, lm_RT1)
+anova(lm_RTnull, lm_RT2) #ns
+anova(lm_RTnull, lm_RT3)
+anova(lm_RTnull, lm_RT4)
+anova (lm_RT1, lm_RT3) #ns
+anova(lm_RT1, lm_RT4) #ns
+library(sjstats)
+anova_stats(lm_RT1)
+anova(lm_RT1, lm_RT4)
+anova(lm_RT2, lm_RT4)
+
+step(lm_RT3,direction="backward")
+```
+
+
+### Speed Estimates (Threat *Distortion*)
+
+```{r isolatingtrueestimates, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE}
+df_estimates <- df %>% filter(eventname == "Estimated Speed")
+```
+
+```{r speedrepresent, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE}
+JustSpeeds <- df %>% filter(eventname == "Estimated Speed")
+JustSpeeds$responsename <- as.numeric(JustSpeeds$responsename)
+JustSpeeds <- JustSpeeds %>% filter(trial !="Tutorial Instructions 1") %>% 
+  filter(blockname !="4.NeutralScene") #getting rid of to conserve power
+
+JustSpeeds %>% 
+  group_by(subcondition, blockname) %>% 
+  summarise(AverageSpeed = mean(responsename)) %>% 
+  kable(.,digits = 3, caption = "Average Speed Estimate (Likert Score)" )
+ggplot(JustSpeeds, aes(x=blockname, y = responsename, fill = subcondition)) + geom_boxplot()
+
+JustSpeeds %>% 
+  group_by(baby_mobility) %>% 
+  summarise(AverageSpeed = mean(responsename)) %>% 
+  kable(.,digits = 3, caption = "Average Speed Estimate (Likert Score)" )
+
+# how about we filter out trials that are more than 1SD outside of expected speed parameters?
+#(e.g., a healthy range is average speed = 3 and sd = 1.414)
+#(any range presented outside of 0.9 or 1.9 is excluded)
+
+JustSpeeds$carspeed<-recode(JustSpeeds$carspeed, "44" = "1",  "59" = "2", "88" = "3", "73" = "4", "103" = "5")
+JustSpeeds$carspeed <- as.numeric(JustSpeeds$carspeed)
+JustSpeeds$responsename <- as.numeric(JustSpeeds$responsename)
+
+#just to see how many people need to be filtered out: 
+FilterOut<- JustSpeeds %>% 
+  group_by(id,blockname) %>% 
+  mutate(sd_speed = sd(carspeed))
+
+Low<- FilterOut %>% filter(sd_speed < 1.164)
+High<- FilterOut %>% filter(sd_speed > 1.664)
+FilterOut <- rbind(Low, High) %>% 
+  group_by(id, blockname) %>% 
+  summarise(Count = n())
+
+JustSpeeds <- JustSpeeds %>% 
+  group_by(id,blockname) %>% 
+  mutate(sd_speed = sd(carspeed)) %>% 
+  filter(sd_speed >= 1.164) %>% 
+  filter(sd_speed <= 1.664)
+
+```
+
+#### Stimuli checks
+
+Checking scale bias (centralizing response bias)
+```{r speedgraph1, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+ggplot(JustSpeeds, aes(x=responsename, color = subcondition)) + 
+  geom_density() + xlab("Estimated Speed (Likert)")  + 
+  ggtitle("Distribution of Speed Estimates Overlap Between Conditions")
+
+```
+
+**Description**: Code to look at how the actual stim presentation compared to the intended programmed presentation
+ 
+*Hidden code*: To describe the following
+
+* Comparing presentation speed to programmed speed
+* Collapsing the likert range to correspond to speed range
+
+```{r actualspeed, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE}
+#test to figure out if timing events actually match car speeds (comment out when not in use)
+#there are 258.81 ft in the car path (258.81 ft/s = 176 mph)
+#dividing the ft/s speed (carspeed) by 1.467 should equal the mph speed
+#258/timesincecarstart  / 1.467 = carspeed? lets test
+df$programmedMPH <- recode(df$carspeed, "44"="30", "59"="40", "73"="50", "88"="60", "103"="70")
+stim_pres_check <- df %>% filter(eventname == "Car Ends" | eventname == "Car Starts") %>% 
+  mutate(timesincecarstart = timenow - lag(timenow, default = first(timenow))) %>%  
+  mutate(msmph = (258/timesincecarstart)/1.467) %>% filter(eventname == "Car Ends")
+
+ggplot(stim_pres_check, aes(x = msmph, fill=programmedMPH)) + geom_density(alpha=0.50) + xlim(list=c(25,75)) +
+  ylab("MPH based on actual timing logs") + xlab("MPH based on programmed speed")
+
+```
+
+
+#### Speed predicted by virtual baby presence/type
+```{r speedgraph2, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+Speed.se.summary <- JustSpeeds %>% 
+  group_by(blockname, subcondition) %>% #within block and subject and parental status
+  summarise(
+    sd = sd(responsename),
+    se = sqrt(var(responsename)/length(responsename)),
+    mean = mean(responsename),
+    alpha=0.05, 
+    t=qt((1-alpha)/2 + .5, 
+    length(JustSpeeds$responsename)-1),   # tend to 1.96 if sample size is big enough
+    CI=t*se)
+
+
+#relabeling factors to make codes prettier
+Speed.se.summary$blockname <- recode(Speed.se.summary$blockname, 
+                                  "6.BabyScene" = "Infant", 
+                                  "6.DogScene" = "Dog", 
+                                  "6.RobotScene" = "Robot")
+
+plot <- ggplot(Speed.se.summary, aes(x=blockname, y = mean, ymin = mean-CI, ymax = mean+CI, group = subcondition, color = subcondition, fill = subcondition)) +
+  # geom_line(size = 1.5) +
+  # geom_point(size = 3) +
+  geom_bar(stat = "identity", position = position_dodge()) + 
+  geom_errorbar(size = 1, width = 0.2, position = position_dodge(0.9), color = "gray4") +
+  xlab("Virtual Model Condition") + ylab("Speed Judgements (Likert)") + 
+ scale_color_manual(name = "Parental Experience", values = c("blue", "darkgoldenrod3")) +
+  scale_fill_manual(name = "Parental Experience", values = c("blue", "darkgoldenrod3")) +
+  theme_classic() +
+  theme(axis.text=element_text(size=18), 
+        axis.title=element_text(size=20,face="bold"), 
+        legend.text=element_text(size=18),
+        legend.title = element_text(size=20))
+plot
+
+
+Speed.se.summary3 <- JustSpeeds %>% 
+  group_by(blockname, subcondition) %>% #within block and subject
+  summarise(
+    sd = sd(responsename),
+    se = sqrt(var(responsename)/length(responsename)),
+    mean = mean(responsename), 
+        alpha=0.05, 
+    t=qt((1-alpha)/2 + .5, 
+    length(JustSpeeds$responsename)-1), 
+    CI=t*se) %>% 
+  mutate(relabeled_groups = fct_recode(blockname,
+                                  "Infant" = "6.BabyScene", 
+                                  "Dog" = "6.DogScene", 
+                                  "Robot" = "6.RobotScene")) %>% 
+  mutate(relabeled_groups = fct_relevel(relabeled_groups, 
+                                        "Infant", 
+                                        "Dog", 
+                                        "Robot"))
+
+
+plot2<-ggplot(Speed.se.summary3, aes(x=relabeled_groups, y = mean, color = subcondition, fill = subcondition)) + 
+  geom_bar(stat = "identity", position = position_dodge(), ) +
+  scale_color_manual(name = "Parental Experience", values = c("blue", "darkgoldenrod3")) +
+  scale_fill_manual(name = "Parental Experience", values = c("blue", "darkgoldenrod3")) +
+  geom_errorbar(aes(ymin = mean-CI, ymax = mean+CI), width = .2,
+                position = position_dodge(.9), color = "black") +
+    # geom_crossbar(aes(ymin = mean-se, ymax = mean+se), width = .2,
+    #             position = position_dodge(.9), linetype = "dashed") +
+  xlab("Virtual Model Condition") + 
+  ylab("Speed Judgements (Likert Scale)") +
+  coord_cartesian(ylim=c(3,5)) +
+    theme_classic()  +
+  theme(axis.text=element_text(size=18), 
+        axis.title=element_text(size=20,face="bold"), 
+        legend.text=element_text(size=18),
+        legend.title = element_text(size=20))
+plot2
+```
+**Description**: Regression model where Speed Estimate is predicted by model stimuli and random effects
+
+```{r speedtest1, include=TRUE, echo = TRUE, message=FALSE, warning=FALSE}
+lm_speednull <- lmer(responsename ~ (1 |id), data = JustSpeeds)
+lm_speed1 <- lmer(responsename ~ blockname + (1 |id), data = JustSpeeds)
+lm_speed2 <- lmer(responsename ~ subcondition + (1|id), data = JustSpeeds)
+lm_speed3 <- lmer(responsename ~ subcondition * blockname + (1|id), data = JustSpeeds)
+lm_speed4 <- lmer(responsename ~ subcondition + blockname + (1|id), data = JustSpeeds)
+
+anova(lm_speednull, lm_speed1)
+anova(lm_speednull, lm_speed2) #ns
+anova(lm_speednull, lm_speed3)
+anova(lm_speednull, lm_speed4)
+anova (lm_speed1, lm_speed3) #ns
+anova(lm_speed1, lm_speed4) #ns
+anova(lm_speed4, lm_speed3)
+anova(lm_speed2, lm_speed4) 
+
+anova_stats(lm_speed1)
+```
+
+```{r anotherpoweranalysis, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE}
+#calculate power (needs to be manually run for now)
+
+#for within measures
+anova(lm_speed1)
+F_to_eta2(7.5442, 2, 919.71) #calculate eta2 from f-ratio
+sqrt(0.02)/(1-0) #calculate cohen's f from eta2
+#note, even with the most conservative corr between repeated measures, power is still .72
+#even a .15 mean corr is sufficient
+
+#for between measures
+anova(lm_speed2)
+F_to_eta2(0.9954, 1, 33.295)
+sqrt(0.03)/(1-0)
+#with most conservative corr-between-measures, power is .999
+
+#between-within interaction
+anova(lm_speed3)
+F_to_eta2(1.8570, 2, 939.49) #teeny tiny baby effect size 
+sqrt(.00394)/(1-0) 
+#a tiny effect is unsurprising with an non-sig result
+#going back to do an a-priori shows that with the same effect as the other tests (0.14) and completly conservative corr estimate, an N of 42 would be sufficient
+```
+
+```{r speedtestmeans1, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+emmeans(lm_speed1, "blockname", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Average effect of Virtual Infant type")
+
+emmeans(lm_speed2, "subcondition", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Average effect of Parent status")
+
+summary(lm_speed4)
+```
+
+
+### Picking up baby
+**Description**: Code to look at how often participants picked up the baby and where the baby was when they did. (Notably, I had to make sure these events extended beyond those that were filtered for not being "true trials".)
+
+
+```{r Bpresses, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+df_pretrues %>% filter(eventname == "B Pressed") %>% 
+  group_by(babylocation, blockname) %>% summarize(count = n()) %>% 
+  kable(., digits = 2, caption = "Total B presses")
+  #need to eliminate duplicates when they press space more than once
+
+numberB <- df_pretrues %>% filter(eventname == "B Pressed") %>% 
+  #need to eliminate duplicates when they press space more than once
+  group_by(id, babylocation, blockname) %>% summarize(count = n()) 
+  
+ numberB %>% 
+   group_by(blockname) %>% 
+   summarize("Average" = mean(count)) %>% 
+   kable(., digits = 2, caption = "Average B presses per subject across parental status")
+ 
+numberB %>% 
+  group_by(babylocation) %>% 
+  summarize("Average B Presses Per Subject" = mean(count)) %>% 
+  kable(., digits = 2, caption = "Average B presses per subject across baby location")
+```
+
+
+```{r Bpressessig, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+lm_Bpress <- lm(count ~ babylocation, data=numberB)
+emmeans(lm_Bpress, "babylocation", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Difference in Average No. of B Presses")
+
+```
+ 
+
+### Comparing Demographics and Determining Confounds
+
+```{r democomparisons, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+reduced_demos <- df %>% 
+  select(anxiety, depression, videogames, relationship, age, gender, race, primary_language, number_children, baby_mobility, breastfeed, id, subcondition, baby_mobility) %>% 
+  group_by(id) %>% unique()
+
+#comparing difference between groups
+lm_anxiety <- lm(anxiety ~subcondition, data = reduced_demos)
+lm_depression <- lm(depression ~ subcondition, data = reduced_demos)
+
+emmeans(lm_anxiety, "subcondition", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Comparing Anxiety Between Parents and NonParents")
+emmeans(lm_depression, "subcondition", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Comparing Depression Between Parents and NonParents")
+
+#predicting RTs
+lm_RT.anxiety <- lmer(timesincecarstart ~ anxiety + (1|id), data = JustRTs)
+lm_RT.depression <- lmer(timesincecarstart ~ depression + (1|id), data = JustRTs)
+lm_RT.race <- lmer(timesincecarstart ~ race + (1|id), data = JustRTs)
+lm_RT.age <- lmer(timesincecarstart ~ age + (1|id), data = JustRTs)
+lm_RT.relationship <- lmer(timesincecarstart ~ relationship + (1|id), data = JustRTs)
+lm_RT.videogames <- lmer(timesincecarstart ~ videogames + (1|id), data = JustRTs)
+
+lm_RT.mobility <- lmer(timesincecarstart ~ baby_mobility + (1|id), data = JustRTs)
+lm_RT.breastfeed <- lmer(timesincecarstart ~ breastfeed + (1|id), data = JustRTs)
+lm_RT.kids <- lmer(timesincecarstart ~ number_children + (1|id), data = JustRTs)
+
+lm_RT.gender<-lmer(timesincecarstart ~ gender + (1|id), data = JustRTs)
+
+#make a smaller table of just p-values and only show those greater than 0.05
+summary2 <- matrix(c((summary(lm_RT.anxiety)$coef[2,5]), 
+                     (summary(lm_RT.depression)$coef[2,5]),
+                     (summary(lm_RT.race)$coef[2,5]),
+                     (summary(lm_RT.relationship)$coef[2,5]),
+                     (summary(lm_RT.age)$coef[2,5]),
+                     (summary(lm_RT.mobility)$coef[2,5]),
+                     (summary(lm_RT.breastfeed)$coef[2,5]),
+                     (summary(lm_RT.kids)$coef[2,5]), 
+                     (summary(lm_RT.gender)$coef[2,5])), byrow = TRUE)
+colnames(summary2) <- c("P-values")
+rownames(summary2) <- c("~anxiety", "~depression", "~race", "~relationship", "~age", "~child mobility", "~breastfeed", "~number of kids", "~gender")
+summary2 %>% kable(., caption = "Summary of p-values for RT predicted by each demo")
+
+#predicting speed
+lm_Speed.anxiety <- lmer(responsename ~ anxiety + (1|id), data = JustSpeeds)
+lm_Speed.depression <- lmer(responsename ~ depression + (1|id), data = JustSpeeds)
+lm_Speed.race <- lmer(responsename ~ race + (1|id), data = JustSpeeds)
+lm_Speed.age <- lmer(responsename ~ age + (1|id), data = JustSpeeds)
+lm_Speed.relationship <- lmer(responsename ~ relationship + (1|id), data = JustSpeeds)
+lm_Speed.videogames <- lmer(responsename ~ videogames + (1|id), data = JustSpeeds)
+
+lm_Speed.mobility <- lmer(responsename ~ baby_mobility + (1|id), data = JustSpeeds)
+lm_Speed.breastfeed <- lmer(responsename ~ breastfeed + (1|id), data = JustSpeeds)
+lm_Speed.kids <- lmer(responsename ~ number_children + (1|id), data = JustSpeeds)
+
+lm_Speed.gender<-lmer(responsename ~ gender + (1|id), data = JustSpeeds)
+lm_Speed.gender.parent<-lmer(responsename ~ gender*baby_mobility + (1|id), data = JustSpeeds)
+
+
+#make a smaller table of just p-values and only show those greater than 0.05
+summary3 <- matrix(c((summary(lm_Speed.anxiety)$coef[2,5]), 
+                     (summary(lm_Speed.depression)$coef[2,5]),
+                     (summary(lm_Speed.race)$coef[2,5]),
+                     (summary(lm_Speed.relationship)$coef[2,5]),
+                     (summary(lm_Speed.age)$coef[2,5]),
+                     (summary(lm_Speed.mobility)$coef[2,5]),
+                     (summary(lm_Speed.breastfeed)$coef[2,5]),
+                     (summary(lm_Speed.kids)$coef[2,5]),
+                     (summary(lm_Speed.gender)$coef[2,5])), byrow = TRUE)
+colnames(summary3) <- c("P-values")
+rownames(summary3) <- c("~anxiety", "~depression", "~race", "~relationship", "~age", "~child mobility", "~breastfeed", "~number of kids", "~gender")
+summary3 %>% kable(., caption = "Summary of p-values for Speed predicted by each demo")
+```
+
+#### Effect of gender explored
+
+```{r gendertests, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE}
+lm_RT_gender <- lmer(timesincecarstart ~  gender + (1|id), data = JustRTs)
+lm_speed_gender <- lmer(responsename ~  gender + (1|id), data = JustSpeeds)
+
+lm_speed_gender2 <- lmer(responsename ~  gender*subcondition + (1|id), data = JustSpeeds)
+lm_speed_gender3 <- lmer(responsename ~  gender*blockname + (1|id), data = JustSpeeds)
+```
+
+```{r gendertestemmeans, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+emmeans(lm_RT_gender, "gender", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Average effect of Gender on RT")
+  
+emmeans(lm_speed_gender, "gender", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Average effect of Gender on Speed Estimate")
+
+emmeans(lm_speed_gender2, "gender", by="subcondition", contr="pairwise", infer=TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Difference in mobility estimates by parental status")
+emmeans(lm_speed_gender3, "gender", by="blockname", contr="pairwise", infer=TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Difference in mobility estimates by parental status")
+```
+
+#### Effect of parity explored
+
+```{r paritytests, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE}
+#need to recode parity first
+JustRTs$number_children <- recode(JustRTs$number_children , 
+                                  "1"="primi", "1.5"="multi","2"= "multi","3"="multi", "4"="multi","6"="multi","One, although we plan for more down the line. (3 Probably)"="primi",) %>% na_if("") %>% as.character(.) %>% replace_na(., "null") %>% as.factor(.)
+
+
+JustSpeeds$number_children <- recode(JustSpeeds$number_children , 
+                                  "1"="primi", "1.5"="multi","2"= "multi","3"="multi", "4"="multi","6"="multi","One, although we plan for more down the line. (3 Probably)"="primi",) %>% na_if("") %>% as.character(.) %>% replace_na(., "null") %>% as.factor(.)
+
+JustRTs$number_children <- as.factor(JustRTs$number_children)
+JustSpeeds$number_children <- as.factor(JustSpeeds$number_children)
+
+lm_RT_parity <- lmer(timesincecarstart ~  number_children + (1|id), data = JustRTs)
+lm_speed_parity <- lmer(responsename ~  number_children  + (1|id), data = JustSpeeds)
+```
+
+```{r paritytestemmeans, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+emmeans(lm_RT_parity, "number_children", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Average effect of Gender on RT")
+  
+emmeans(lm_speed_parity, "number_children", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Average effect of Gender on Speed Estimate")
+```
+
+#### Effect of nursing status explored
+
+```{r filterfemale, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE}
+FemaleParentsRTs <- JustRTs %>% filter(gender == 2) %>% filter(subcondition == "Parent")
+FemaleParentsSpeeds <- JustSpeeds %>% filter(gender == 2) %>% filter(subcondition == "Parent")
+```
+
+```{r nursingtest, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE}
+lm_RT_nursing <- lmer(timesincecarstart ~  breastfeed + (1|id), data = FemaleParentsRTs)
+lm_speed_nursing <- lmer(responsename ~  breastfeed  + (1|id), data = FemaleParentsSpeeds)
+```
+
+```{r nursingtestemmeans, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+emmeans(lm_RT_nursing, "breastfeed", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Average effect of Nursing on RT (female only)")
+  
+emmeans(lm_speed_nursing, "breastfeed", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=3, caption = "Average effect of Nursing on Speed Estimate (female only)")
+```
+
+
+
+#### Effect of state anxiety/depression explored
+
+```{r depressiontests,include=FALSE, echo = FALSE, message=FALSE, warning=FALSE}
+lm_RT_depression <- lmer(timesincecarstart ~  depression + (1|id), data = JustRTs) #ns
+lm_speed_depression <- lmer(responsename ~  depression  + (1|id), data = JustSpeeds) #ns
+```
+
+```{r anxietytests, include=TRUE, echo = TRUE, message=FALSE, warning=FALSE}
+lm_RT_anxiety <- lmer(timesincecarstart ~  anxiety + (1|id), data = JustRTs) #ns
+lm_speed_anxiety <- lmer(responsename ~  anxiety  + (1|id), data = JustSpeeds) #ns
+```
+
+
+

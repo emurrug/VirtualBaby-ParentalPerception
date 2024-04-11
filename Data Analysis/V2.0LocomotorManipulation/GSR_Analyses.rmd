@@ -1,0 +1,1300 @@
+---
+title: "Analyzing Locomotor Baby"
+date: "October 2022"
+output: word_document
+---
+
+## Brief Description of Document
+*This document is a stable markdown file that allows me to reproduce analyses and figures in report form. The most up to date raw data is currently being stored on GitHub at BabyLab/VirtualBaby-ParentPerception.*
+
+*Note: By distributing the raw .Rmd file, one can use* `include=TRUE` *to include output, or* `echo=TRUE` *to include code. i.e., this report can be catered to different audiences without changing any of the contents. To generate a word output of the results, you can "knit" this file immediately.*
+
+*This file is for analyzing* **Galvanic Skin Response (GSR)** *data.*
+
+## Setting up
+*Hidden code*: To import necessary R packages and files. Files are pulled from local clone of GitHub repository.
+```{r library, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+#library
+library(knitr)
+library(tibble)
+library(dplyr) #please do not load plyr!
+library(tidyr)
+library(scales)
+library(ggplot2)
+library(emmeans)
+library(lme4)
+library(ggridges)
+library(lmerTest)
+library(rmarkdown)
+library(forecast)
+library(forcats)
+library(stats)
+library(zoo)
+library(changepoint)
+```
+
+```{r load, include=TRUE, echo = TRUE, message=FALSE, warning=FALSE}
+GSC1 <- read.csv("C:/Users/emmam/Documents/GitHub/VirtualBaby-ParentPerception/Data Analysis/V2.0LocomotorManipulation/GSC/combined_GSC.csv")
+GSC2<- read.csv("C:/Users/emmam/Documents/GitHub/VirtualBaby-ParentPerception/Data Analysis/V2.0LocomotorManipulation/GSC/combined_GSC_2.csv")
+GSC3<- read.csv("C:/Users/emmam/Documents/GitHub/VirtualBaby-ParentPerception/Data Analysis/V2.0LocomotorManipulation/GSC/combined_GSC_3.csv")
+GSC4<- read.csv("C:/Users/emmam/Documents/GitHub/VirtualBaby-ParentPerception/Data Analysis/V2.0LocomotorManipulation/GSC/combined_GSC_4.csv")
+GSC5<- read.csv("C:/Users/emmam/Documents/GitHub/VirtualBaby-ParentPerception/Data Analysis/V2.0LocomotorManipulation/GSC/combined_GSC_5.csv")
+unity <- read.csv("C:/Users/emmam/Documents/GitHub/VirtualBaby-ParentPerception/Data Analysis/V2.0LocomotorManipulation/Unity/combined_unity.csv")
+
+df <- rbind(GSC1, GSC2, GSC3, GSC4, GSC5)
+
+```
+
+```{r trim, include=TRUE, echo = TRUE, message=FALSE, warning=FALSE}
+#I should probably go in and clean this data a bit more to trim down on how large it is..
+
+#averages GSR to 500 ms bins. anything less is just annoying large amounts of data
+bin <- df %>%
+  group_by(cuttime = cut(ms, breaks = seq(0, max(ms), 500))) %>%
+  group_by(id, cuttime, button) %>% 
+  summarise(GSR = mean(GSR), button = mean(button), id = mean(id), time = min(ms)) %>% 
+  select(!cuttime)
+
+
+#breaking it up since last code takes a hot sec
+df <- bin %>% #renamed back to df so the rest of the code stays the same
+  filter (GSR <= 500) 
+df <- subset(df, select = c(id, time, GSR, button)) #why won't you die
+  
+
+#need to use unity data to find timestamps for start of tutorial 1 (matches button 2)
+#find first instance of button 2 for each id and label that row
+df_unique <- df %>% distinct (id, button, .keep_all = TRUE) 
+
+#use this time to figure out who has all 3 trials
+df_all3 <- df_unique %>% select(time, id, button) %>% 
+      spread(button, time) %>% 
+      select(id, "1", "2", "3") #I'm not sure, but someone pressed more than 3 buttons once
+
+#who to remove:
+  #113, 114, 117, 118, 131, 135, 136 for not having at least 2 buttons
+  #100 (button press didnt happen until end)
+  #108, 109, 119 (can't tell if 2 was missed or 1 was supposed to be 2)
+  #128, 111 palms were too sweaty and GSR was at floor
+  #169 had to restart the game for them and the had already seen a baby
+  #178 had jewelry that interfered
+  #189, 191, 197, 205, 206 all had fussy babies and needed to take sleeves off
+df <- df %>% filter(id !=100,
+                    id !=111,
+                    id !=107,
+                    id !=108,
+                    id !=109,
+                    id !=113,
+                    id !=114,
+                    id !=117,
+                    id !=118,
+                    id !=119,
+                    id !=128,
+                    id !=131,
+                    id !=135,
+                    id !=136,
+                    id !=140,
+                    id !=141,
+                    id !=169,
+                    id !=178, 
+                    id !=189, 
+                    id !=191,
+                    id !=197,
+                    id !=205, 
+                    id !=206)
+
+
+```
+
+## Cleaning The Data (Pre-Processing)
+*Description:* These were the steps taken to get the data in the right format for analysis. 
+
+* The GSR data was tidied up to remove extraneous rows of data before the initial time stamp
+* Manually added in the id column (hint to self: excel shortcut is SHIFT + CTRL + END)
+* Manually combined all the subject data into one large file. The file had to be expanded across several CSVs because it hit the row limit
+* *How the Button var is defined:* Button "1" was pressed when the subject started the informed consent. "2" was pressed when the subject started the gameplay. "3" was pressed when the researcher noticed that the subject was on the survey. Note that these are not perfect time markers and can be off from their represented event by a few seconds
+
+*Note:* E.M. plays videogames, and rather than optimize her R workspace, she creates dataframes titled "autosaves". Please forgive her.
+```{r zeroGSRtime, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE, cache = TRUE}
+#now that data is clean, I'm re-running "df_unique" (sorry) to get the time data on that row  
+#and add a new column so that there are unique timestamps
+df_unique <- df %>% distinct (id, button, .keep_all = TRUE) %>% 
+  mutate("starttime" = time) %>% 
+  filter(button == 2) 
+
+#unique timestamp is applied within each id
+df <- df %>% add_column("starttime" = NA)
+df$starttime <- as.numeric(df$starttime)
+
+
+autosave1 <- df #df autosave before a big change
+
+#(note to self: current runtime = 3:30 min)
+for(i in 1:dim(df[1])){
+  for(j in 1:dim(df_unique[1])){
+    if(df$id[i] == df_unique$id[j]){
+      df$starttime[i] = df_unique$starttime[j] 
+    }
+  }
+}
+
+#0 out GSC time at beginning of game by subtracting time from static row time
+df_zerod <- df %>% mutate("newtime" = time - starttime) %>% 
+  select(GSR, id, newtime)
+```
+
+```{r unityclean, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE, cache = TRUE}
+#repeat for unity data (removing time spent in informed consent)
+unity_unique <- unity %>% distinct(id, blockname, .keep_all = TRUE) %>% filter(blockname == "3.Narrative1") %>% 
+  mutate("unitystart" = timenow) #eventually need to make sure time is in same units
+
+#(instant)
+unity <- unity %>% add_column("unitystart" = NA)
+for(i in 1:dim(unity[1])){
+  for(j in 1:dim(unity_unique[1])){
+    if(unity$id[i] == unity_unique$id[j]){
+      unity$unitystart[i] = unity_unique$unitystart[j] 
+    }
+  }
+}
+```
+
+```{r unityzero, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE, cache = TRUE}
+#0 out GSC time at beginning of game by subtracting time from static row time
+unity_zerod <- unity %>% mutate("newunitytime" = timenow - unitystart)
+
+#keep GSR and unity time in the same units then keep only DVs of interest
+  unity_zerod <- unity_zerod %>% mutate("newtime" = newunitytime * 1000) %>% 
+    select(id, subcondition, blockname,trial, 
+           carspeed, babylocation, responsename, 
+           eventname, mobility, newtime)
+```
+
+```{r combinedfs, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE, cache = TRUE}
+#make it so that i can rbind the two datasets together
+
+#means that GSC (df) and unity needs to have the same column names
+newdf <- df_zerod %>% add_column(subcondition = NA, trial = NA, 
+                                 blockname = NA, carspeed = NA, 
+                                 babylocation = NA, responsename = NA, 
+                                 eventname = NA, mobility = NA)
+newunity <- unity_zerod %>% add_column(GSR = NA)
+combineddf <- rbind(newdf, newunity)
+
+#tidying up a bit & hitting autosave
+combineddf <- combineddf %>% filter(newtime > 0)
+autosave2 <- combineddf
+```
+
+```{r blocklabels, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE, cache = TRUE}
+#the line when the baby is first introduced
+firstbaby <- combineddf %>% 
+  distinct(id, blockname, .keep_all = TRUE) %>% 
+  filter(blockname == "5.Narrative2") %>% 
+  mutate("firstbabytime" = newtime)
+
+#a line at every trial 1 (separates blocks)
+#(note: doesn't really need to be specific to block since time is inherent in GSR data)
+trial1s <- combineddf %>% 
+  distinct(id, trial, mobility, .keep_all = TRUE) %>% 
+  filter(trial == "1") %>% 
+  mutate("trial1times" = newtime)
+
+#a line at trial 1 where walker or crawler is true (first mobile baby)
+firstmobile <- trial1s %>% 
+  filter(mobility == "crawler" | mobility == "walker") %>% 
+  mutate("firstmobiletimes" = newtime)
+
+firstprecrawl <- trial1s %>% 
+  filter(mobility == "precrawler") %>% 
+  mutate("firstprecrawlertime" = newtime)
+firstcrawl <- trial1s %>% 
+  filter(mobility == "crawler") %>% 
+  mutate("firstcrawlertime" = newtime)
+firstwalk <- trial1s %>% 
+  filter(mobility == "walker") %>% 
+  mutate("firstwalkertime" = newtime)
+```
+
+```{r firstimestamps, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE, cache = TRUE}
+#set up the data file so that it loops the timestamps through the bigger dataset
+combineddf <- combineddf %>% 
+  add_column("firstbabytime" = NA, "trial1times" = NA, "firstmobiletimes" = NA, 
+             "firstprecrawlertime" = NA, "firstcrawlertime" = NA, "firstwalkertime" = NA)
+
+#ETA: 40+ min
+for(i in 1:dim(combineddf[1])){
+  for(j in 1:dim(firstbaby[1])){
+    if(combineddf$id[i] == firstbaby$id[j]){
+      combineddf$firstbabytime[i] = firstbaby$firstbabytime[j] 
+    }
+  }
+  for(j in 1:dim(firstmobile[1])){
+    if(combineddf$id[i] == firstmobile$id[j]){
+      combineddf$trial1times[i] = firstmobile$trial1times[j] 
+      combineddf$firstmobiletimes[i] = firstmobile$firstmobiletimes[j]
+    }
+  }
+  for(j in 1:dim(firstprecrawl[1])){
+    if(combineddf$id[i] == firstprecrawl$id[j]){
+      combineddf$firstprecrawlertime[i] = firstprecrawl$firstprecrawlertime[j]
+    }
+  }
+  for(j in 1:dim(firstcrawl[1])){
+    if(combineddf$id[i] == firstcrawl$id[j]){
+      combineddf$firstcrawlertime[i] = firstcrawl$firstcrawlertime[j]
+    }
+  }
+  for(j in 1:dim(firstwalk[1])){
+    if(combineddf$id[i] == firstwalk$id[j]){
+      combineddf$firstwalkertime[i] = firstwalk$firstwalkertime[j]
+    }
+  }
+}
+
+#autosave
+autosave3 <- combineddf
+save.image("~/GitHub/VirtualBaby-ParentPerception/Data Analysis/V2.0LocomotorManipulation/GSC_workspace.RData")
+```
+
+```{r codifyingtime, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE, cache = TRUE}
+#Here I am creating blocks of before, during, and after markers in the data
+#That way I can arrange the data by linear time, (un-counterbalanced)
+
+#generating empty columns to be filled with numeric code
+combineddf <- combineddf %>% mutate("firstbabycode" = newtime) %>% 
+  mutate("firstprecrawlcode" = NA) %>% 
+  mutate("firstcrawlcode" = NA) %>% 
+  mutate("firstwalkcode" = NA) %>% 
+  mutate("min" = pmin(firstprecrawlertime, firstcrawlertime, firstwalkertime)) %>% 
+  mutate("max" = pmax(firstprecrawlertime, firstcrawlertime, firstwalkertime)) %>% 
+  add_column("med" = NA)
+
+
+#0 = pre-first infant exposure
+#1 = after first infant exposure
+combineddf$firstbabycode[combineddf$firstbabytime > combineddf$newtime] <- 0 
+combineddf$firstbabycode[combineddf$firstbabytime <= combineddf$newtime] <- 1 
+
+
+#labeling blocks with numeric codes..
+combineddf$firstprecrawlcode[combineddf$firstprecrawlertime == combineddf$max] <- 3
+
+combineddf$firstprecrawlcode[combineddf$firstprecrawlertime == combineddf$min] <- 1
+combineddf$firstprecrawlcode[combineddf$firstprecrawlertime != combineddf$max & 
+                             combineddf$firstprecrawlertime != combineddf$min ]<- 2
+
+combineddf$firstcrawlcode[combineddf$firstcrawlertime == combineddf$max] <- 3
+combineddf$firstcrawlcode[combineddf$firstcrawlertime == combineddf$min] <- 1
+combineddf$firstcrawlcode[combineddf$firstcrawlertime != combineddf$max & 
+                             combineddf$firstcrawlertime != combineddf$min ]<- 2
+
+combineddf$firstwalkcode[combineddf$firstwalkertime == combineddf$max] <- 3
+combineddf$firstwalkcode[combineddf$firstwalkertime == combineddf$min] <- 1
+combineddf$firstwalkcode[combineddf$firstwalkertime != combineddf$max & 
+                             combineddf$firstwalkertime != combineddf$min ]<- 2
+
+
+#getting rid of rows with NAs (bc there wasn't at least 2 values to get a max)
+combineddf <- combineddf[!is.na(combineddf$max),]
+
+#max's and min's were labeled, so now med's are the rest..
+combineddf$med[combineddf$firstprecrawlcode == 2] <- combineddf$firstprecrawlertime
+combineddf$med[combineddf$firstcrawlcode == 2] <- combineddf$firstcrawlertime
+combineddf$med[combineddf$firstwalkcode == 2] <- combineddf$firstwalkertime
+
+#generating block codes 
+combineddf <- combineddf %>% add_column("blockcode" = NA)
+combineddf$blockcode[combineddf$newtime < combineddf$min] <- "block0"
+combineddf$blockcode[combineddf$newtime < combineddf$med & 
+                combineddf$newtime >= combineddf$min] <- "block1"
+combineddf$blockcode[combineddf$newtime < combineddf$max & 
+                combineddf$newtime >= combineddf$med] <- "block2"
+combineddf$blockcode[combineddf$newtime >= combineddf$max] <- "block3"
+
+#relabeling the block order with the block codes to generate virtual infant labels
+combineddf <- combineddf %>% add_column("blockcode2" = NA)
+combineddf$blockcode2[combineddf$blockcode == "block0"] <- "nobaby"
+
+combineddf$blockcode2[combineddf$blockcode == "block1" &
+              combineddf$firstprecrawlcode == 1] <- "precrawler"
+combineddf$blockcode2[combineddf$blockcode == "block2" &
+              combineddf$firstprecrawlcode == 2] <- "precrawler"
+combineddf$blockcode2[combineddf$blockcode == "block3" &
+              combineddf$firstprecrawlcode == 3] <- "precrawler"
+
+combineddf$blockcode2[combineddf$blockcode == "block1" &
+              combineddf$firstcrawlcode == 1] <- "crawler"
+combineddf$blockcode2[combineddf$blockcode == "block2" &
+              combineddf$firstcrawlcode == 2] <- "crawler"
+combineddf$blockcode2[combineddf$blockcode == "block3" &
+              combineddf$firstcrawlcode == 3] <- "crawler"
+
+combineddf$blockcode2[combineddf$blockcode == "block1" &
+              combineddf$firstwalkcode == 1] <- "walker"
+combineddf$blockcode2[combineddf$blockcode == "block2" &
+              combineddf$firstwalkcode == 2] <- "walker"
+combineddf$blockcode2[combineddf$blockcode == "block3" &
+              combineddf$firstwalkcode == 3] <- "walker"
+
+#autosave
+autosave4 <-combineddf
+```
+
+```{r lagtracing, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+#funfact: the last time "cuttime" happened was before combineddf was created 
+#only the GSC file exists in 500 ms bins
+#the only things that are important to keep track of are the events that happen
+#(we assume that GSR can just be imputed between these events)
+#but this means we can't rely on the 500ms bins for anything
+#we can only use raw time (fundamentally changes the timeseries blocks below)
+
+#makes it so all the GSR values are filled in instead of NAs
+#this method is slightly more precise than the method below (should still review)
+combineddf <- combineddf %>% group_by(id) %>% arrange(newtime, .by_group = TRUE) %>% mutate("newGSR" = GSR) %>% 
+  mutate("tempGSR" = lag(GSR, n=1)) 
+
+#(instant)
+for(i in 1:dim(combineddf[1])) {
+  if(is.na(combineddf$GSR[i]) == TRUE){
+    combineddf$newGSR[i] = combineddf$tempGSR[i] 
+  }
+}
+
+#need to lag on subcondition, mobility, trial, blockname, carspeed
+#this method is slightly less precise, but allows for large gap fills in "NA"s
+combineddf$subcondition <-  ave(combineddf$subcondition, cumsum(!is.na(combineddf$subcondition)), FUN = function(x) x[1])
+combineddf$mobility <-  ave(combineddf$mobility, cumsum(!is.na(combineddf$mobility)), FUN = function(x) x[1])
+combineddf$trial <-  ave(combineddf$trial, cumsum(!is.na(combineddf$trial)), FUN = function(x) x[1])
+combineddf$blockname<-  ave(combineddf$blockname, cumsum(!is.na(combineddf$blockname)), FUN = function(x) x[1])
+combineddf$carspeed<-  ave(combineddf$carspeed, cumsum(!is.na(combineddf$carspeed)), FUN = function(x) x[1])
+
+#have to really make sure you do this for GSR too
+combineddf$newGSR<-  ave(combineddf$newGSR, cumsum(!is.na(combineddf$newGSR)), FUN = function(x) x[1])
+```
+
+```{r firstvisual, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE, cache = FALSE}
+#this is the visual that comes before the fine-tweaking below
+combineddf$id <- as.factor(combineddf$id)
+ggplot(combineddf, aes(x = newtime, y = newGSR, color = id)) + geom_line() + xlim(0,1000000)
+```
+
+```{r removeoutliers, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE, cache = FALSE}
+#need to find point when GSR is highest (GSRmax)
+#when GSRmax is true, then call that time "final time"
+#final time, and the preceding half minute, should be cleaned out
+combineddf <- combineddf %>% group_by(id) %>% 
+  drop_na(newGSR) %>% 
+  mutate(finalGSR = (max(newGSR) - 10), #reducing it 10 points to capture wiggle room
+         overtime = finalGSR - newGSR) %>% 
+  filter(overtime > 0) %>% 
+  mutate(maxtime = max(newtime), last30 = (maxtime - 30000)) %>% 
+  filter(!newtime >= last30) %>% 
+  filter(newtime < 1000000) #data after this point is generally weird
+```
+
+```{r praythisworks, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE, cache = FALSE}
+#use a spagetti plot to visualize over time
+ggplot(combineddf, aes(x = newtime, y = newGSR, color = id)) + geom_line() 
+```
+
+```{r zscaling, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE, cache = FALSE}
+autosave4.5 <- combineddf
+combineddf <- combineddf %>% 
+  group_by(id) %>% 
+  mutate(z_scale = scale(newGSR)) %>% 
+  filter(z_scale < 5) #filtering to normal parameters
+
+ggplot(combineddf, aes(x = newtime, y = z_scale, color = id)) + geom_line() 
+```
+
+## Visualizing Average GSR and Simple Slopes
+
+```{r averages, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+#hit an autosave 
+autosave5 <-combineddf
+
+
+avgs <- combineddf  %>%group_by(blockcode2, id) %>% summarize("averages" = mean(newGSR), z_scale = z_scale) %>% drop_na(z_scale) %>% summarize(avg_z = mean(z_scale))
+avgs2 <- combineddf  %>% group_by(blockcode, id) %>% summarize("averages" = mean(newGSR), z_scale = z_scale) %>% drop_na(z_scale) %>% summarize(avg_z = mean(z_scale))
+
+avgs$id <- as.factor(avgs$id)
+ggplot(avgs, aes(x=blockcode2, y = avg_z, group = id, color = id)) +
+   geom_line() + geom_point() + 
+   xlab("Condition") + ylab("Average GSR") + ggtitle("GSR of Subs Across Counterbalanced Conditions")
+
+avgs2$id <- as.factor(avgs2$id)
+ggplot(avgs2, aes(x=blockcode, y = avg_z, group = id, color = id)) +
+   geom_line() + geom_point() + 
+   xlab("Condition") + ylab("Average GSR") + ggtitle("GSR of Subs Across Linear Conditions")
+
+slope <- avgs %>% spread(blockcode2, avg_z) 
+slope$precrawler <- as.numeric(slope$precrawler)
+slope$crawler <- as.numeric(slope$crawler)
+slope$nobaby <- as.numeric(slope$nobaby)
+slope <- slope %>% 
+  mutate("PreCrawl - NoBaby" = precrawler-nobaby) %>% 
+  mutate("Crawl - PreCrawl" = crawler-precrawler) %>% 
+  mutate("Walk - Crawl" = walker-crawler) %>% 
+  pivot_longer(cols = c("PreCrawl - NoBaby", "Crawl - PreCrawl", "Walk - Crawl"), 
+                        names_to = "blockcode2", values_to = "slopes")
+slope2 <- avgs2 %>% spread(blockcode, avg_z) %>% 
+  mutate("Block 1 - 0" = block1-block0) %>% 
+  mutate("Block 2 - 1" = block2-block1) %>% 
+  mutate("Block 3 - 2" = block3-block2) %>% 
+  pivot_longer(cols = c("Block 1 - 0", "Block 2 - 1", "Block 3 - 2"), 
+                        names_to = "blockcode", values_to = "slopes")
+
+ggplot(slope, aes(x = blockcode2, y = slopes)) + geom_boxplot() + geom_hline(yintercept = 0, size = 1, linetype = "dashed")
+
+ggplot(slope2, aes(x = blockcode, y = slopes)) + geom_boxplot() + geom_hline(yintercept = 0, size = 1, linetype = "dashed")
+```
+
+```{r parentalaverages, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE, cache = FALSE}
+#i'm just going to input baby_mobility manually from the experimenter log since i don't have the patience anymore
+combineddf <- combineddf %>% add_column(baby_mobility = NA)
+
+combineddf$baby_mobility[combineddf$id == "101"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "102"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "104"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "105"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "110"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "111"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "115"] <- "Crawl"
+combineddf$baby_mobility[combineddf$id == "116"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "120"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "121"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "122"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "123"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "124"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "125"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "126"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "127"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "129"] <- "Crawl"
+combineddf$baby_mobility[combineddf$id == "130"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "131"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "132"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "133"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "134"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "135"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "136"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "137"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "138"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "139"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "140"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "141"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "142"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "143"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "144"] <- "Crawl"
+combineddf$baby_mobility[combineddf$id == "145"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "146"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "147"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "148"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "149"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "150"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "151"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "152"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "153"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "154"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "155"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "156"] <- "Crawl"
+combineddf$baby_mobility[combineddf$id == "157"] <- "Sit"
+combineddf$baby_mobility[combineddf$id == "158"] <- "Crawl"
+combineddf$baby_mobility[combineddf$id == "159"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "160"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "161"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "162"] <- "Walk"
+combineddf$baby_mobility[combineddf$id == "163"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "164"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "165"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "166"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "167"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "168"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "169"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "170"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "171"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "172"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "173"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "174"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "175"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "176"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "177"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "178"] <- "Non-Parent"
+combineddf$baby_mobility[combineddf$id == "179"] <- "Non-Parent"
+
+combineddf <- combineddf %>% filter(baby_mobility != "Non-Parent")
+
+
+#getting averages by parental experience
+Pavgs <- combineddf  %>%group_by(id, blockcode2, baby_mobility) %>% summarize("averages" = mean(newGSR), z_scale = z_scale) %>% drop_na(z_scale) %>% summarize(avg_z = mean(z_scale))
+Pavgs2 <- combineddf  %>% group_by(id, blockcode, baby_mobility) %>% summarize("averages" = mean(newGSR), z_scale = z_scale) %>% drop_na(z_scale) %>% summarize(avg_z = mean(z_scale))
+
+avgs.se.summary <- Pavgs %>% 
+  group_by(baby_mobility,blockcode2) %>% #within block and subject and parental status
+  summarise(
+    sd = sd(avg_z),
+    se = sqrt(var(avg_z)/length(avg_z)),
+    mean = mean(avg_z)) %>% 
+    mutate(relabeled_groups = fct_recode(blockcode2, 
+                                       "Tutorial (No Infant)" = "nobaby", 
+                                       "Precrawling Infant" = "precrawler", 
+                                       "Crawling Infant" = "crawler", 
+                                       "Walking Infant" = "walker")) %>% 
+   mutate(blockcode2_relevel = fct_relevel(relabeled_groups, 
+                                  "Tutorial (No Infant)", 
+                                  "Precrawling Infant",
+                                  "Crawling Infant",
+                                  "Walking Infant"))
+avgs.se.summary2 <- Pavgs2 %>% 
+  group_by(baby_mobility,blockcode) %>% #within block and subject and parental status
+  summarise(
+    sd = sd(avg_z),
+    se = sqrt(var(avg_z)/length(avg_z)),
+    mean = mean(avg_z)) %>% 
+  mutate(blockcode_relabel = fct_recode(blockcode,
+                                         "No Virtual Infant (Tutorial)" = "block0",
+                                         "First Infant Type" = "block1",
+                                         "Second Infant Type" = "block2",
+                                         "Third Infant Type" = "block3"))
+
+plot <- ggplot(avgs.se.summary, aes(x= blockcode2_relevel , 
+                                    y = mean, group = baby_mobility, color = baby_mobility,
+                                    ymin = mean-se, ymax = mean+se)) +
+  geom_line(size = 1.5) +
+  geom_point(size = 3) +
+  geom_errorbar(size = 1, width = 0.2) + 
+  xlab("Virtual Infant Condition") + 
+  ylab("Galvanic Skin Conductance (z-scaled)") + ylim(-1,1) +
+  #ggtitle("GSR of Subs Across Counterbalanced Conditions") +
+  #scale_color_discrete(name = "Parents of...", 
+  #                     labels=c('Pre-Crawlers','Crawlers', 'Walkers')) + 
+  scale_color_manual(name = "mobility", 
+                       values = c("red", "chartreuse3","blue")) +
+  theme_classic() + 
+  theme(axis.text=element_text(size=18), 
+        axis.title=element_text(size=20,face="bold"), 
+        legend.text=element_text(size=18),
+        legend.title = element_text(size=20))
+
+
+ggplot(avgs.se.summary2, aes(x=blockcode_relabel, y = mean, group = baby_mobility, color = baby_mobility, ymin = mean-se, ymax = mean+se
+                             )) +
+   geom_line(size = 1) + geom_point(size = 2) +
+   xlab("Virtual Infant Exposure") + ylab("Average Galvanic Skin Response (GSR)") + 
+   ggtitle("Average GSR Over Time") + 
+  #scale_color_manual(name = "baby_mobility", values = c("red", "green", "blue")) + 
+  theme_light() +
+    geom_errorbar(width = 0.2) #yeah ew
+#---------------------------------------------------
+
+slope <- Pavgs %>% spread(blockcode2, avg_z)
+slope$precrawler <- as.numeric(slope$precrawler)
+slope$crawler <- as.numeric(slope$crawler)
+slope$nobaby <- as.numeric(slope$nobaby)
+
+slope <- slope %>%
+  mutate("PreCrawl - NoBaby" = precrawler-nobaby) %>%
+  mutate("Crawl - PreCrawl" = crawler-precrawler) %>%
+  mutate("Walk - Crawl" = walker-crawler) %>%
+  pivot_longer(cols = c("PreCrawl - NoBaby", "Crawl - PreCrawl", "Walk - Crawl"),
+                        names_to = "blockcode2", values_to = "slopes") %>% 
+  group_by(blockcode2, baby_mobility) %>% drop_na(slopes) %>% 
+  mutate(mean = mean(slopes), sd = sd(slopes),
+         se = sqrt(var(slopes)/length(slopes))) %>% 
+  mutate(blockcode2_relabel = fct_recode(blockcode2,
+                                  "'No Baby' to 'Precrawler'" = "PreCrawl - NoBaby",
+                                  "'Precrawler' to 'Crawler'" = "Crawl - PreCrawl", 
+                                  "'Crawler' to 'Walker'" = "Walk - Crawl")) %>% 
+  mutate(blockcode2_relabel = fct_relevel(blockcode2_relabel, 
+                                 "'No Baby' to 'Precrawler'", 
+                                 "'Precrawler' to 'Crawler'", 
+                                 "'Crawler' to 'Walker'"))
+  
+
+
+slope2 <- Pavgs2 %>% spread(blockcode, avg_z) %>%
+  mutate("Block 1 - 0" = block1-block0) %>%
+  mutate("Block 2 - 1" = block2-block1) %>%
+  mutate("Block 3 - 2" = block3-block2) %>%
+  pivot_longer(cols = c("Block 1 - 0", "Block 2 - 1", "Block 3 - 2"),
+                        names_to = "blockcode", values_to = "slopes") %>% 
+  group_by(blockcode, baby_mobility) %>% drop_na(slopes) %>% 
+  mutate(mean = mean(slopes), se = sd(slopes), 
+         se = sqrt(var(slopes)/length(slopes))) %>% 
+  mutate(blockcode_relabel = fct_recode(blockcode, 
+                                    "From No Baby to First Baby" = "Block 1 - 0", 
+                                    "From First to Second Baby" = "Block 2 - 1", 
+                                    "From Second to Last Baby" = "Block 3 - 2")) %>% 
+  mutate(blockcode_relabel = fct_relevel(blockcode_relabel, 
+                                      "From No Baby to First Baby", 
+                                      "From First to Second Baby", 
+                                      "From Second to Last Baby")) 
+
+
+ggplot(slope, aes(x = blockcode2_relabel, y = mean, fill = baby_mobility)) + 
+  geom_bar(stat = "identity", width = .8, position = position_dodge(.8)) +
+  geom_hline(yintercept = 0, size = 1, linetype = "dashed") +
+  xlab("Change in Virtual Infant Conditions") + 
+  ylab("Change in GSR Slopes") +  
+  #scale_fill_manual(name = "baby_mobility", values = c( "chartreuse3", "red", "blue")) + theme_light()  +
+    theme(legend.position="none") +
+  theme(axis.text=element_text(size=18), 
+        axis.title=element_text(size=20,face="bold"))
+  # + geom_errorbar(aes(ymax = mean + se, ymin = mean-se), position = position_dodge())
+  #I'm not really sure why the full se lines aren't showing correctly or its plotting truley
+
+ggplot(slope2, aes(x = blockcode_relabel, y = mean, fill = baby_mobility)) + 
+  geom_bar(stat = "identity", width = .8, position = position_dodge(.8))+  
+  geom_hline(yintercept = 0, size = 1, linetype = "dashed") +
+  xlab("Change in Conditions Across Time") + ylab("Change in GSR Slopes") +  
+  #scale_fill_manual(name = "baby_mobility", values = c( "chartreuse3", "red", "blue")) + theme_light() +
+  theme(legend.position="none") +
+  theme(axis.text=element_text(size=18), 
+        axis.title=element_text(size=20,face="bold"))
+```
+
+## Analyzing Average GSR and Simple Slopes across Parental Types
+
+```{r analyzeaverages, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+#this is run on the raw dataset, but the number of observations might be inflating the p-value
+parent_lm <- lmer(z_scale ~ baby_mobility + (1|id), data = combineddf)
+block_lm <- lmer(z_scale ~ blockcode + (1|id), data = combineddf)
+baby_lm <- lmer(z_scale ~ blockcode2 + (1|id), data = combineddf)
+parentXbaby_lm <- lmer(z_scale ~ blockcode2 * baby_mobility + (1|id), data = combineddf)
+
+emmeans(parent_lm, "baby_mobility", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=2, caption = " ")
+emmeans(block_lm, "blockcode", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=2, caption = " ")
+emmeans(baby_lm, "blockcode2", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=2, caption = " ")
+
+ref_pXb <- ref_grid(parentXbaby_lm,at=list(z_scale=c(0,1)))
+contrast(ref_pXb, interaction = "pairwise") %>% 
+  kable(., digit=2, caption = " ")
+
+#run on averages only (reduced n, but lost var)
+parent_lm2 <- lmer(avg_z ~ baby_mobility + (1|id), data = Pavgs)
+block_lm2 <- lmer(avg_z  ~ blockcode + (1|id), data = Pavgs2)
+baby_lm2 <- lmer(avg_z  ~ blockcode2 + (1|id), data = Pavgs)
+parentXbaby_lm2 <- lmer(avg_z~ blockcode2 * baby_mobility + (1|id), data = Pavgs)
+parentXblock_lm2 <- lmer(avg_z ~ blockcode * baby_mobility + (1|id), data = Pavgs2)
+
+emmeans(parent_lm2, "baby_mobility", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=2, caption = " ")
+emmeans(block_lm2, "blockcode", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=2, caption = " ")
+emmeans(baby_lm2, "blockcode2", contr = "pairwise", infer =TRUE)$contrast %>% 
+  kable(., digit=2, caption = " ")
+
+ ref_pXb1 <- ref_grid(parentXblock_lm2,at=list(avg_z=c(0,1)))
+ contrast(ref_pXb1, interaction = "pairwise") %>% 
+   kable(., digit=2, caption = " ")
+ ref_pXb2 <- ref_grid(parentXbaby_lm2,at=list(avg_z=c(0,1)))
+ contrast(ref_pXb2, interaction = "pairwise") %>% 
+   kable(., digit=2, caption = " ")
+# 
+ emmeans(parentXbaby_lm2, "blockcode2", by="baby_mobility", contr="pairwise", infer=TRUE)$contrast %>% 
+   kable(., digit=2, caption = "")
+ emmeans(parentXblock_lm2, "blockcode", by="baby_mobility", contr="pairwise", infer=TRUE)$contrast %>% 
+   kable(., digit=2, caption = "")
+ 
+#autosave
+autosave6 <- combineddf
+``` 
+
+## Comparing GSR pre and post stim (time series analyses)
+
+```{r timeseries_instructions, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+#11/29 we want to know:
+#1. what is the rate of change in a specific window? 
+#2. is the rate of change more drastic in this window of interest that we would expect from the prior (pre-stim) window? 
+
+#calculating rate of change (simple slope) is uninteresting unless i compare it to another unit (across subs or to a null window)
+#across subs probably isn't interesting because there are no parenatal differences 
+#so let's focus on the pre/post
+
+#to do this, we:
+#1. smooth the data to remove sampling artifacts (e.g., ambient electrical currents, heart rate, etc.)
+#2. use ARIMA to model the window in the 5 seconds prior to stimulus onset
+#3. REALLY make sure the model is dead on so that it will be a good model for forcasting
+#4. create a forecasted trend for the next half of the data
+#5. superimpose the forecast with the actual data
+#6. compare the forecast (null) with the actual results by comparing the regressions
+    #should be able to do this by doing an anova on models to see if there is a difference in goodness of fit
+    #or I can test if GSR is predicted by the interaction between forcast (real or simulated) with time 
+        #(it should definitely be predicted by time, so that wont be interesting by itself; only the interaction)
+```
+
+```{r timeseries_firstbaby5, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+###5 seconds###
+#lets try setting it to the first baby = 0 and the 5 s before - 5s after
+firstbabytest <- combineddf %>%
+  select(id, z_scale, newtime, firstbabytime) %>% #just to be easier on the eyes
+  mutate(firstbabycenter = newtime - firstbabytime) %>%
+  filter(firstbabycenter >= -5000) %>% filter (firstbabycenter <= 5000) %>%
+  group_by(cuttime = cut(firstbabycenter, breaks = seq(-5000,5000, 50))) %>% 
+  summarise(z_scale = mean(z_scale))
+
+#let's get the time series and training set 
+test<-as.ts(firstbabytest$z_scale)
+train <- firstbabytest[1:92,]
+train <- as.ts(train$z_scale)
+#might as well get a post-stim too 
+compare <- firstbabytest[93:184,]
+compare <- as.ts(compare$z_scale)
+
+#and smooth it to do a preliminary sweep for artifacts
+#https://boostedml.com/2020/05/an-introduction-to-time-series-smoothing-in-r.html
+test <-rollmean(test, 20) #smooths over 1s
+train <-rollmean(train, 20)
+compare <-rollmean(compare, 20)
+  
+#autoregressive integrated moving averages model (forcast)
+
+#let's go in manually...
+train%>% diff() %>% ggtsdisplay(main="")
+#a better forecasting model is one that minimizes residuals
+arima(train, order = c(9,0,9))#*winner*
+arima(train, order = c(0,0,9))
+arima(train, order = c(8,0,8))
+arima(train, order = c(3,0,9))
+arima(train, order = c(0,0,9))
+arima(train, order = c(10,0,10))#random big number test
+
+#how well do the residuals fit? 
+#https://otexts.com/fpp2/arima-r.html
+MA <-arima(train, order = c(9,0,9))
+checkresiduals(MA) #all roots should be in the circle
+autoplot(MA)
+#visualize fit
+MA_residuals <-residuals(MA)
+MA_fit <- train- MA_residuals
+ts.plot(train)
+points(MA_fit, type = "l", col = 2, lty = 3)
+
+#forecasted projection 
+autoplot(forecast(MA, h = 100))
+forecast_ts <- as.ts(forecast(MA, h = 100)) #this comes with CIs, so let's filter
+forecast_ts <- forecast_ts[,1]
+
+#initial visual comparison between actual and forecasted 
+ts.plot(test, ylim=c(-.1, .4))
+lines(forecast_ts, col = "red", lwd = 1.0)
+
+#you know what.. what if, instead of superimposing the forecasted model
+#i just superimpose the pre-stim and post-stim windows (post smoothing)
+ts.plot(train, ylim=c(-.1, .4))
+lines(compare, col = "red", lwd = 1.0)
+#*cue happy breakthrough noises*
+
+
+#do a formal analysis now...
+window1 <- as.data.frame(train)
+window2 <-as.data.frame(compare)
+
+#creating a dataframe to compare actual data (window) to fitted data (window2)
+window1 <- rowid_to_column(window1, "row") 
+window1 <- window1 %>% add_column(window = "0")
+window2 <- rowid_to_column(window2, "row")
+window2 <- window2 %>% add_column(window = "1")
+window1$x <-as.numeric(window1$x)
+window2$x <-as.numeric(window2$x)
+comb <-rbind(window1,window2)
+
+#can i do an anova?
+lm_window1 <- lm(x ~ row, data = window1)
+lm_window2 <- lm(x ~ row, data = window2)
+anova(lm_window1, lm_window2)
+#ah right.. no p value...
+
+#window should not be sig (the fitted model and actual data shouldn't be different on the whole)
+#but the interaction should be (the two models should only be different over time)
+lmwindow <- lm(x ~ row*window, data = comb)
+summary(lmwindow)
+```
+
+```{r timeseries_firstbaby30, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+###30 seconds###
+firstbabytest <- combineddf %>%
+  select(id, z_scale, newtime, firstbabytime) %>% #just to be easier on the eyes
+  mutate(firstbabycenter = newtime - firstbabytime) %>%
+  filter(firstbabycenter >= -30000) %>% filter (firstbabycenter <= 30000) %>%
+  group_by(cuttime = cut(firstbabycenter, breaks = seq(-30000,30000, 50))) %>% 
+  summarise(z_scale = mean(z_scale))
+
+
+#let's get the time series and training set 
+test<-as.ts(firstbabytest$z_scale)
+train <- firstbabytest[1:550,]
+train <- as.ts(train$z_scale)
+#might as well get a post-stim too 
+compare <- firstbabytest[551:1109,]
+compare <- as.ts(compare$z_scale)
+
+#and smooth it to do a preliminary sweep for artifacts
+#https://boostedml.com/2020/05/an-introduction-to-time-series-smoothing-in-r.html
+test <-rollmean(test, 60) #smooths over 3s
+train <-rollmean(train, 60)
+compare <-rollmean(compare, 60)
+  
+#(for now, forecasting doesn't actually matter if I am superimposing the results...)
+#for visuals only
+
+#superimpose the pre-stim and post-stim windows
+ts.plot(train, ylim=c(-.3, .3))
+lines(compare, col = "red", lwd = 1.0)
+abline(h = 0, col= "blue", lty = 2)
+
+
+#do a formal analysis now...
+window1 <- as.data.frame(train)
+window2 <-as.data.frame(compare)
+
+#creating a dataframe to compare actual data (window) to fitted data (window2)
+window1 <- rowid_to_column(window1, "row") 
+window1 <- window1 %>% add_column(window = "0")
+window2 <- rowid_to_column(window2, "row")
+window2 <- window2 %>% add_column(window = "1")
+window1$x <-as.numeric(window1$x)
+window2$x <-as.numeric(window2$x)
+comb <-rbind(window1,window2)
+
+#only the interaction matters 
+lmwindow <- lm(x ~ row*window, data = comb)
+summary(lmwindow)
+```
+
+```{r timeseries_otherbabydfs, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+# #something I want to do is an autoregression model that finds points in change
+#found a package meant for finding change points in ts data
+#http://www.lancs.ac.uk/~killick/Pub/KillickEckley2011.pdf
+
+
+#now for each of the individual baby types (note this is based on trial 1, not the tutorial intro)
+precrawlertest <- combineddf %>%
+  select(id, z_scale, newtime, firstprecrawlertime) %>%
+  mutate(firstcenter = newtime - firstprecrawlertime) %>%
+  filter(firstcenter >= -30000) %>% filter (firstcenter <= 30000) %>%
+  group_by(cuttime = cut(firstcenter, breaks = seq(-30000,30000, 50))) %>% 
+  summarise(z_scale = mean(z_scale))
+crawlertest <- combineddf %>%
+  select(id, z_scale, newtime, firstcrawlertime) %>%
+  mutate(firstcenter = newtime - firstcrawlertime) %>%
+  filter(firstcenter >= -30000) %>% filter (firstcenter <= 30000) %>%
+  group_by(cuttime = cut(firstcenter, breaks = seq(-30000,30000, 50))) %>% 
+  summarise(z_scale = mean(z_scale))
+walkertest <- combineddf %>%
+  select(id, z_scale, newtime, firstwalkertime) %>%
+  mutate(firstcenter = newtime - firstwalkertime) %>%
+  filter(firstcenter >= -30000) %>% filter (firstcenter <= 30000) %>%
+  group_by(cuttime = cut(firstcenter, breaks = seq(-30000,30000, 50))) %>% 
+  summarise(z_scale = mean(z_scale))
+mobiletest <- combineddf %>%
+  select(id, z_scale, newtime, firstmobiletimes) %>%
+  mutate(firstcenter = newtime - firstmobiletimes) %>%
+  filter(firstcenter >= -30000) %>% filter (firstcenter <= 30000) %>%
+  group_by(cuttime = cut(firstcenter, breaks = seq(-30000,30000, 50))) %>% 
+  summarise(z_scale = mean(z_scale))
+```
+
+```{r timeseries_precrawler, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+### 5 seconds###
+
+test<-as.ts(precrawlertest$z_scale)
+train <- precrawlertest[462:555,]
+train <- as.ts(train$z_scale)
+#might as well get a post-stim too 
+compare <- precrawlertest[551:651,]
+compare <- as.ts(compare$z_scale)
+
+test <-rollmean(test, 20) #smooths over 3s
+train <-rollmean(train, 20)
+compare <-rollmean(compare, 20)
+
+### 30 seconds###
+
+#let's get the time series and training set
+test<-as.ts(precrawlertest$z_scale)
+train <- precrawlertest[1:555,]
+train <- as.ts(train$z_scale)
+#might as well get a post-stim too 
+compare <- precrawlertest[551:1125,]
+compare <- as.ts(compare$z_scale)
+
+test <-rollmean(test, 60) #smooths over 3s
+train <-rollmean(train, 60)
+compare <-rollmean(compare, 60)
+
+##############################
+#for visuals only
+test <-rollmean(test, 5) #smooths over 3s
+train <-rollmean(train, 5)
+compare <-rollmean(compare, 5)
+
+#superimpose the pre-stim and post-stim windows
+ts.plot(train, ylim=c(-.45, .45))
+lines(compare, col = "red", lwd = 1.0)
+abline(h=0, col = "blue", lty = 2)
+
+#do a formal analysis now...
+window1 <- as.data.frame(train)
+window2 <-as.data.frame(compare)
+
+#creating a dataframe to compare actual data (window) to fitted data (window2)
+window1 <- rowid_to_column(window1, "row") 
+window1 <- window1 %>% add_column(window = "0")
+window2 <- rowid_to_column(window2, "row")
+window2 <- window2 %>% add_column(window = "1")
+window1$x <-as.numeric(window1$x)
+window2$x <-as.numeric(window2$x)
+comb <-rbind(window1,window2)
+
+#only the interaction matters 
+lmwindow <- lm(x ~ row*window, data = comb)
+summary(lmwindow)
+```
+```{r timeseries_crawler, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+### 5 seconds###
+
+test<-as.ts(crawlertest$z_scale)
+train <- crawlertest[462:572,]
+train <- as.ts(train$z_scale)
+#might as well get a post-stim too 
+compare <- crawlertest[573:670,]
+compare <- as.ts(compare$z_scale)
+
+test <-rollmean(test, 20) #smooths over 3s
+train <-rollmean(train, 20)
+compare <-rollmean(compare, 20)
+
+### 30 seconds###
+
+#let's get the time series and training set
+test<-as.ts(crawlertest$z_scale)
+train <- crawlertest[1:572,]
+train <- as.ts(train$z_scale)
+#might as well get a post-stim too 
+compare <- crawlertest[573:1159,]
+compare <- as.ts(compare$z_scale)
+
+test <-rollmean(test, 60) #smooths over 3s
+train <-rollmean(train, 60)
+compare <-rollmean(compare, 60)
+
+##############################
+#for visuals only
+test <-rollmean(test, 5) #smooths over 3s
+train <-rollmean(train, 5)
+compare <-rollmean(compare, 5)
+
+#superimpose the pre-stim and post-stim windows
+ts.plot(train, ylim=c(-.45, .45))
+lines(compare, col = "red", lwd = 1.0)
+abline(h=0, col = "blue", lty = 2)
+
+#do a formal analysis now...
+window1 <- as.data.frame(train)
+window2 <-as.data.frame(compare)
+
+#creating a dataframe to compare actual data (window) to fitted data (window2)
+window1 <- rowid_to_column(window1, "row") 
+window1 <- window1 %>% add_column(window = "0")
+window2 <- rowid_to_column(window2, "row")
+window2 <- window2 %>% add_column(window = "1")
+window1$x <-as.numeric(window1$x)
+window2$x <-as.numeric(window2$x)
+comb <-rbind(window1,window2)
+
+#only the interaction matters 
+lmwindow <- lm(x ~ row*window, data = comb)
+summary(lmwindow)
+```
+```{r timeseries_walker, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+### 5 seconds###
+
+test<-as.ts(walkertest$z_scale)
+train <- walkertest[488:584,]
+train <- as.ts(train$z_scale)
+#might as well get a post-stim too 
+compare <- walkertest[585:681,]
+compare <- as.ts(compare$z_scale)
+
+test <-rollmean(test, 20) #smooths over 3s
+train <-rollmean(train, 20)
+compare <-rollmean(compare, 20)
+
+### 30 seconds###
+
+#let's get the time series and training set
+test<-as.ts(walkertest$z_scale)
+train <- walkertest[1:584,]
+train <- as.ts(train$z_scale)
+#might as well get a post-stim too 
+compare <- walkertest[584:1159,]
+compare <- as.ts(compare$z_scale)
+
+test <-rollmean(test, 60) #smooths over 3s
+train <-rollmean(train, 60)
+compare <-rollmean(compare, 60)
+
+##############################
+#for visuals only
+test <-rollmean(test, 5) #smooths over 3s
+train <-rollmean(train, 5)
+compare <-rollmean(compare, 5)
+
+#superimpose the pre-stim and post-stim windows
+ts.plot(train, ylim=c(-.45, .45))
+lines(compare, col = "red", lwd = 1.0)
+abline(h=0, col = "blue", lty = 2)
+
+#do a formal analysis now...
+window1 <- as.data.frame(train)
+window2 <-as.data.frame(compare)
+
+#creating a dataframe to compare actual data (window) to fitted data (window2)
+window1 <- rowid_to_column(window1, "row") 
+window1 <- window1 %>% add_column(window = "0")
+window2 <- rowid_to_column(window2, "row")
+window2 <- window2 %>% add_column(window = "1")
+window1$x <-as.numeric(window1$x)
+window2$x <-as.numeric(window2$x)
+comb <-rbind(window1,window2)
+
+#only the interaction matters 
+lmwindow <- lm(x ~ row*window, data = comb)
+summary(lmwindow)
+```
+```{r timeseries_mobile, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+### 5 seconds###
+
+test<-as.ts(mobiletest$z_scale)
+train <- mobiletest[489:585,]
+train <- as.ts(train$z_scale)
+#might as well get a post-stim too 
+compare <- mobiletest[586:683,]
+compare <- as.ts(compare$z_scale)
+
+test <-rollmean(test, 20) #smooths over 3s
+train <-rollmean(train, 20)
+compare <-rollmean(compare, 20)
+
+### 30 seconds###
+
+#let's get the time series and training set
+test<-as.ts(mobiletest$z_scale)
+train <- mobiletest[1:585,]
+train <- as.ts(train$z_scale)
+#might as well get a post-stim too 
+compare <- mobiletest[586:1170,]
+compare <- as.ts(compare$z_scale)
+
+test <-rollmean(test, 60) #smooths over 3s
+train <-rollmean(train, 60)
+compare <-rollmean(compare, 60)
+
+##############################
+test <-rollmean(test, 5) #smooths over 3s
+train <-rollmean(train, 5)
+compare <-rollmean(compare, 5)
+#superimpose the pre-stim and post-stim windows
+ts.plot(train, ylim=c(-.2, .2), col = "red")
+lines(compare, lwd = 1.0)
+abline(h=0, col = "blue", lty = 2)
+
+#do a formal analysis now...
+window1 <- as.data.frame(train)
+window2 <-as.data.frame(compare)
+
+#creating a dataframe to compare actual data (window) to fitted data (window2)
+window1 <- rowid_to_column(window1, "row") 
+window1 <- window1 %>% add_column(window = "0")
+window2 <- rowid_to_column(window2, "row")
+window2 <- window2 %>% add_column(window = "1")
+window1$x <-as.numeric(window1$x)
+window2$x <-as.numeric(window2$x)
+comb <-rbind(window1,window2)
+
+#only the interaction matters 
+lmwindow <- lm(x ~ row*window, data = comb)
+summary(lmwindow)
+```
+
+## Analyzing the Relationship between GSR and RT
+
+```{r timeseries_instructions, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+#first question: 
+#does a decrease in GSR (increase in arousal) predict RT scores? 
+#can be answered with a linear regression accounting for sub ID
+#can visualize as rate of change with GSR and RT superimposed on an x-axis of time
+
+#second question: 
+#does stress reactivity to the initial baby predict RT during that condition?
+#to do this, i need to operationalize stress reactivity
+#e.g., speed between starting GSR and max GSR in a 30s interval
+#e.g., rate of decay from max to min over 60s interval
+#then run a linear regression predicting RT from reactivity 
+```
+
+```{r stress_reactivity, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE}
+#this has to happen before i reduce the dataset for the RT trials
+
+#for each person, i need to identify the time of the trial onset (already done)
+#isolate the 30 seconds following that time (lag30)
+  #use time filter
+#obtain the min (DONT FORGET IT HAS TO BE MIN) GSR score during that time window
+  #group by and summarise as a new column 
+
+#actually, let's just do this by specific group for now..
+#i can actually combine this all later i think
+reactivity1 <- combineddf %>% 
+  mutate(firstprecrawlertime = newtime - firstprecrawlertime) %>%
+  filter(firstprecrawlertime >= 1) %>% filter (firstprecrawlertime <= 30000) %>% 
+  group_by(id, mobility) %>% 
+  mutate(minGSR = min(z_scale)) %>% 
+  filter(z_scale == min(z_scale)) %>% 
+  mutate("reactivity" = firstprecrawlertime)
+#firstprecrawlertime now represents the speed it took to get to their min
+reactivity2 <- combineddf %>% 
+  mutate(firstcrawlertime = newtime - firstcrawlertime) %>%
+  filter(firstcrawlertime >= 1) %>% filter (firstcrawlertime <= 30000) %>% 
+  group_by(id, mobility) %>% 
+  mutate(minGSR = min(z_scale)) %>% 
+  filter(z_scale == min(z_scale)) %>% 
+  mutate("reactivity" = firstcrawlertime)
+reactivity3 <- combineddf %>% 
+  mutate(firstwalkertime = newtime - firstwalkertime) %>%
+  filter(firstwalkertime >= 1) %>% filter (firstwalkertime <= 30000) %>% 
+  group_by(id, mobility) %>% 
+  mutate(minGSR = min(z_scale)) %>% 
+  filter(z_scale == min(z_scale)) %>% 
+  mutate("reactivity" = firstwalkertime)
+reactivity <- rbind(reactivity1, reactivity2, reactivity3)
+
+
+reactivity <- reactivity %>%  mutate(tempID = paste(id, mobility))
+combineddf <- combineddf%>%  mutate(tempID = paste(id, mobility))  
+combineddf <- combineddf %>% add_column("reactivity" = NA)
+
+#it has just occured to me that this may take a few hot secs 
+for(i in 1:dim(combineddf[1])){
+  for(j in 1:dim(reactivity[1])){
+    if(combineddf$tempID[i] == reactivity$tempID[j]){
+      combineddf$reactivity[i] = reactivity$reactivity[j] 
+    }
+  }
+}
+```
+
+```{r isolatingtruetrials, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE}
+#making a unique code to identify rows easier
+combineddf <- combineddf %>% 
+  mutate("uniquecode" = paste (id, trial, mobility)) %>% 
+  mutate ("xtra_uniquecode" = paste(id, trial, mobility, newtime))
+
+#isolating the three critical events of each trial so that we have ONLY 3 per trial
+#the 3 critical events are selected by removing other instances in the same trial in later rows
+df_scores <- combineddf %>% filter(eventname == "Score (Space Pressed)")
+df_carstart <- combineddf %>% filter(eventname == "Car Starts")
+df_carend <- combineddf %>% filter(eventname == "Car Ends")
+
+#df4 of just the first unique instance of each event
+df_uniquescores <- df_scores %>% distinct(eventname, uniquecode, .keep_all = TRUE)
+df_uniquestarts <- df_carstart %>% distinct(eventname, uniquecode, .keep_all = TRUE)
+df_uniqueends <- df_carend %>% distinct(eventname, uniquecode, .keep_all = TRUE)
+
+#df4 of just events that are to be filtered out for being anything but the first instance
+df_scoredupes <- df_scores[!df_scores$xtra_uniquecode %in% df_uniquescores$xtra_uniquecode,]
+df_startdupes <- df_carstart[!df_carstart$xtra_uniquecode %in% df_uniquestarts$xtra_uniquecode,]
+df_enddupes <- df_carend[!df_carend$xtra_uniquecode%in% df_uniqueends$xtra_uniquecode,]
+
+#removing the filtered df4 from the main df4
+combineddf<- combineddf[!combineddf$xtra_uniquecode %in% df_scoredupes$xtra_uniquecode,]
+combineddf <- combineddf[!combineddf$xtra_uniquecode %in% df_startdupes$xtra_uniquecode,]
+combineddf <- combineddf[!combineddf$xtra_uniquecode %in% df_enddupes$xtra_uniquecode,]
+```
+
+```{r RT_test, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+#identifying RT events 
+ JustRTs <- combineddf%>%
+   filter(eventname == "Score (Space Pressed)" | eventname == "Car Starts") %>%
+   arrange(newtime) %>% arrange(id) %>%
+   mutate(timesincecarstart = newtime - lag(newtime, default = first(newtime))) %>%
+   filter(eventname == "Score (Space Pressed)" & timesincecarstart < 100000)
+   #to control for it being 10s from last event
+
+#simple RT test
+ RTxGSC_lm <- lmer(timesincecarstart ~ z_scale * mobility + (1|id), data = JustRTs)
+ summary(RTxGSC_lm)
+ anova(RTxGSC_lm)
+
+ref_pXb <- ref_grid(RTxGSC_lm,at=list(z_scale=c(0,1)))
+contrast(ref_pXb, interaction = "pairwise")
+ 
+#reactivity test
+ reactivity_lm <- lmer(timesincecarstart ~ reactivity * mobility+ (1|id), data = JustRTs)
+ summary(reactivity_lm)
+ 
+
+ 
+  ggplot(JustRTs, aes(x = z_scale, y = timesincecarstart, fill = mobility, color = mobility)) +
+    geom_smooth(method = "loess", se = TRUE, level = 0.90, aes(fill=mobility), lwd = 1.25) + 
+    ylim(0,3000) + xlim(-3,3) +theme_bw() 
+```
+
+```{r RT_visuals, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+#visualizing RT ~ GSC
+#will come back to in the future if there are significant results
+```
+
+## Analyzing the Relationship between GSR and Speed Judgements
+
+```{r isolatingtrueestimates, include=FALSE, echo = FALSE, message=FALSE, warning=FALSE}
+df_estimates <- combineddf %>% filter(eventname == "Estimated Speed")
+df_uniqueests <- df_estimates %>% distinct(eventname, uniquecode, .keep_all = TRUE)
+df_estdupes <- df_estimates[!df_estimates$xtra_uniquecode %in% df_uniqueests$xtra_uniquecode,]
+combineddf <- combineddf[!combineddf$xtra_uniquecode %in% df_estdupes$xtra_uniquecode,]
+combineddf <- combineddf[combineddf$uniquecode %in% df_estimates$uniquecode,]
+```
+
+```{r Speed_test, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+#identifying speed events 
+JustSpeeds <- combineddf %>% filter(eventname == "Estimated Speed")
+JustSpeeds$responsename <- as.numeric(JustSpeeds$responsename)
+
+#simple RT test
+ speedxGSC_lm <- lmer(responsename~ z_scale *mobility + (1|id), data = JustSpeeds)
+ summary(speedxGSC_lm)
+ anova(speedxGSC_lm)
+ ref_pXb <- ref_grid(speedxGSC_lm,at=list(z_scale=c(0,1)))
+contrast(ref_pXb, interaction = "pairwise")
+ 
+ 
+#reactivity test
+ reactivity_lm2 <- lmer(responsename ~ reactivity + (1|id), data = JustSpeeds)
+ summary(reactivity_lm2)
+ 
+   ggplot(JustSpeeds, aes(x = z_scale, y = responsename, color = mobility)) +
+    geom_smooth(method = "loess", se = FALSE)
+ 
+```
+## Speed & RTs correlated
+```{r cortest, include=TRUE, echo = FALSE, message=FALSE, warning=FALSE}
+JustSpeeds <- JustSpeeds %>% mutate(speeds = responsename) 
+JustRTs <- JustRTs %>% mutate(RTs = timesincecarstart) %>% add_column("speeds" = NA)
+
+
+for(i in 1:dim(JustRTs[1])){
+  for(j in 1:dim(JustSpeeds[1])){
+    if(JustRTs$uniquecode[i] == JustSpeeds$uniquecode[j]){
+      JustRTs$speeds[i] = JustSpeeds$speeds[j] 
+    }
+  }
+}
+
+JustRTs$responsename <- as.numeric(JustRTs$responsename)
+speedXRT <- lmer(responsename ~ speeds + (1|id), data = JustRTs)
+summary(speedXRT)
+```
+
