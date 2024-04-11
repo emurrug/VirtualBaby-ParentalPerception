@@ -50,7 +50,7 @@ and completed builds for MAC and Windows install.
 
 _**For materials**_
 
-Murrugarra, E. (2024). Virtual Baby – Parental Perception [Software]. GitHub. https://github.coecis.cornell.edu/BabyLab/VirtualBaby-ParentPerception
+Murrugarra, E. (2024). Virtual Baby – Parental Perception [Software]. GitHub. https://github.com/emurrug/VirtualBaby-ParentPerception
 
 _**For V2.0 or V2.2**_
 
